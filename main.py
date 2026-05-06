@@ -91,30 +91,37 @@ def push_to_firebase(predicted_number):
 
         db = firestore.client()
         
-        # Calculate tomorrow's date
+        # SMARTER DATE LOGIC:
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
-        tomorrow_date_obj = ist_time + timedelta(days=1)
-        tomorrow_str = tomorrow_date_obj.strftime('%Y-%m-%d')
         
-        # Structure the data EXACTLY how your original AI Studio website expects it
+        # If it is before 5 AM, the target draw is technically "today". 
+        # If it is after 5 AM, the target draw is "tomorrow".
+        if ist_time.hour < 5:
+            target_date_obj = ist_time
+        else:
+            target_date_obj = ist_time + timedelta(days=1)
+            
+        target_str = target_date_obj.strftime('%Y-%m-%d')
+        
         prediction_data = {
-            "target_date": tomorrow_date_obj,
+            "target_date": target_date_obj,
             "top_prediction": predicted_number,
-            "top_probability_percent": 85.0, # Estimated confidence
+            "top_probability_percent": 85.0, 
             "runner_up_1": {"number": predicted_number + 1, "probability": 10.0},
             "runner_up_2": {"number": predicted_number - 1, "probability": 3.0},
             "runner_up_3": {"number": predicted_number + 2, "probability": 2.0},
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         
-        # Write to the EXACT collection your website is reading from
-        doc_ref = db.collection('daily_predictions').document(tomorrow_str)
+        doc_ref = db.collection('daily_predictions').document(target_str)
         doc_ref.set(prediction_data)
         
-        print(f"SUCCESS: Pushed prediction ({predicted_number}) to the 'daily_predictions' folder!")
+        print(f"SUCCESS: Pushed prediction ({predicted_number}) for target date {target_str}!")
         
     except Exception as e:
         print(f"Firebase Upload Failed: {e}")
+
+
 # --- 4. THE MASTER FUNCTION (Tying it all together) ---
 def train_and_predict():
     csv_path = 'satta_disawar_historical_data.csv'
