@@ -15,38 +15,27 @@ def fetch_latest_result(csv_path):
     url = "https://satta-king-fast.com/desawar/satta-result-chart/ds/" 
     
     try:
-        # We use a header to act like a real browser, preventing the website from blocking our automated script
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 1. Find the Desawar row using its unique ID 'DS'
         ds_row = soup.find('tr', id='DS')
+        
         if not ds_row:
             raise ValueError("Could not find the Desawar row in the HTML.")
             
-        # 2. Extract Yesterday's and Today's numbers
-        yesterday_str = ds_row.find('td', class_='yesterday-number').find('h3').text.strip()
         today_str = ds_row.find('td', class_='today-number').find('h3').text.strip()
         
-        print(f"Successfully scraped -> Yesterday's Number: {yesterday_str} | Today's Number: {today_str}")
-        
-        # Check if today's number is rolled out yet (sometimes it shows '--' before 5 AM)
         if not today_str.isdigit():
             raise ValueError(f"Today's number is not yet available. Found: '{today_str}'")
             
         todays_number = int(today_str)
-        
-        # 3. Calculate the correct IST Date (GitHub servers run on UTC, so we must add 5.5 hours)
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
         today_date = ist_time.strftime('%Y-%m-%d')
         
-        # 4. Open the CSV and safely add the data
         df = pd.read_csv(csv_path)
         
-        # Prevent appending the same date twice if the script runs multiple times
         if today_date in df['Date'].values:
             print(f"Data for {today_date} already exists in the CSV. Skipping append.")
         else:
@@ -101,7 +90,6 @@ def push_to_firebase(predicted_number):
 
         db = firestore.client()
         
-        # Calculate tomorrow's date in IST
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
         tomorrow = (ist_time + timedelta(days=1)).strftime('%Y-%m-%d')
         
@@ -118,7 +106,8 @@ def push_to_firebase(predicted_number):
 
 # --- 4. THE MASTER FUNCTION (Tying it all together) ---
 def train_and_predict():
-    csv_path = 'satta_disawar_historical_data_2022_2026.csv'
+    # THIS IS THE LINE WITH THE CORRECT FILE NAME!
+    csv_path = 'satta_disawar_historical_data.csv'
     
     # 1. Update data with today's real scraped result
     df_raw = fetch_latest_result(csv_path)
