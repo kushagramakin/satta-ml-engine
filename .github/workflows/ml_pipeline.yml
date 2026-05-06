@@ -20,7 +20,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas numpy scikit-learn firebase-admin
+          python -m pip install --upgrade pip
+          pip install pandas numpy scikit-learn firebase-admin requests beautifulsoup4 bs4
 
       - name: Run ML Script and Push to Firebase
         env:
