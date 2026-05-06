@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime
+# --- 1. Train the Machine Learning Model ---
+from sklearn.ensemble import RandomForestRegressor
 
 def prepare_data(df):
     """
@@ -35,7 +37,8 @@ def prepare_data(df):
     
     return df
 
-def train_model(csv_path='data/historical_draws.csv'):
+# I CHANGED THE FILE PATH HERE TO MATCH YOUR REPOSITORY
+def train_model(csv_path='satta_disawar_historical_data_2022_2026.csv'):
     # Load raw data
     try:
         df_raw = pd.read_csv(csv_path)
@@ -69,11 +72,21 @@ def train_model(csv_path='data/historical_draws.csv'):
     print(f"Data prepared successfully. Features: {features}")
     print(f"X shape: {X.shape}, Y shape: {Y.shape}")
     
-    # Model training logic would go here (e.g., RandomForest/XGBoost)
-    # model = RandomForestRegressor()
-    # model.fit(X, Y)
+    print("Training the Random Forest Model...")
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, Y)
+
+    # --- 2. Make a Prediction for Tomorrow ---
+    # We grab the very last row of our data (today's clues) to guess tomorrow's number
+    latest_clues = df_clean.tail(1)[features]
+    predicted_number = model.predict(latest_clues)[0]
     
-    return X, Y
+    # We round it to a solid integer since Satta numbers don't have decimals
+    final_prediction = int(round(predicted_number))
+    
+    print(f"SUCCESS! The predicted number for tomorrow is: {final_prediction}")
+    
+    return final_prediction
 
 if __name__ == "__main__":
     train_model()
