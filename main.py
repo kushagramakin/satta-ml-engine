@@ -18,7 +18,7 @@ db = firestore.client()
 
 # --- 2. MACHINE LEARNING PIPELINE ---
 # Load historical data
-df = pd.read_csv('satta_disawar_historical_data_2022_2026.csv')
+df = pd.read_csv('satta_disawar_historical_data.csv')
 df['Date'] = pd.to_datetime(df['Date'])
 df = df.sort_values('Date').reset_index(drop=True)
 
