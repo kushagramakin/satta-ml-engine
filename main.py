@@ -1,77 +1,79 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
-import json
-import os
-import datetime
+from datetime import datetime
 
-# --- 1. INITIALIZE FIREBASE ---
-# GitHub Actions will inject the FIREBASE_CREDENTIALS secret here
-firebase_creds_json = os.environ.get('FIREBASE_CREDENTIALS')
-creds_dict = json.loads(firebase_creds_json)
-cred = credentials.Certificate(creds_dict)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+def prepare_data(df):
+    """
+    Performs feature engineering on the raw Satta draws data.
+    Expected raw columns: ['Date', 'Number']
+    """
+    # 1. Convert Date to datetime object
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date')
 
-# --- 2. MACHINE LEARNING PIPELINE ---
-# Load historical data
-df = pd.read_csv('satta_disawar_historical_data.csv')
-df['Date'] = pd.to_datetime(df['Date'])
-df = df.sort_values('Date').reset_index(drop=True)
+    # 2. Extract basic date features
+    df['Month'] = df['Date'].dt.month
+    df['Day'] = df['Date'].dt.day
+    df['DayOfWeek'] = df['Date'].dt.dayofweek
 
-# (Insert your data cleaning and ML feature engineering logic here)
-# e.g., Month_Sin, Month_Cos, Lag_1, Is_Repeating, Days_Since_Last_Repeating
+    # 3. Cyclical encoding for Month (12 months)
+    df['Month_Sin'] = np.sin(2 * np.pi * df['Month'] / 12)
+    df['Month_Cos'] = np.cos(2 * np.pi * df['Month'] / 12)
 
-# Define features and target
-features = ['Month_Sin', 'Month_Cos', 'DoW_Sin', 'DoW_Cos', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_1_Is_Repeating', 'Lag_2_Is_Repeating', 'Days_Since_Last_Repeating']
-X = df.dropna()[features]
-y = df.dropna()['Winning_Number'].astype(int)
+    # 4. Cyclical encoding for Day of Month (approx 31 days)
+    df['Day_Sin'] = np.sin(2 * np.pi * df['Day'] / 31)
+    df['Day_Cos'] = np.cos(2 * np.pi * df['Day'] / 31)
 
-# Train the Model
-rf = RandomForestClassifier(n_estimators=300, random_state=42, max_depth=8, min_samples_split=5)
-rf.fit(X, y) # Add sample_weights here if implementing the MLOps loop
+    # 5. Lag features (Previous winning numbers)
+    df['Lag_1'] = df['Number'].shift(1)
+    df['Lag_2'] = df['Number'].shift(2)
+    df['Lag_3'] = df['Number'].shift(3)
+    df['Lag_7'] = df['Number'].shift(7) # Weekly seasonality
 
-# Calculate Tomorrow's Target Date
-last_row = df.iloc[-1]
-next_date = last_row['Date'] + pd.Timedelta(days=1)
-target_date_str = next_date.strftime('%Y-%m-%d')
+    # 6. Rolling averages (Optional but helpful)
+    df['Rolling_Mean_3'] = df['Number'].shift(1).rolling(window=3).mean()
+    
+    return df
 
-# Predict
-next_features = pd.DataFrame({
-    'Month_Sin': [np.sin(2 * np.pi * next_date.month / 12)], 
-    'Month_Cos': [np.cos(2 * np.pi * next_date.month / 12)],
-    'DoW_Sin': [np.sin(2 * np.pi * next_date.dayofweek / 7)],
-    'DoW_Cos': [np.cos(2 * np.pi * next_date.dayofweek / 7)],
-    'Lag_1': [last_row['Winning_Number']],
-    'Lag_2': [df.iloc[-2]['Winning_Number']],
-    'Lag_3': [df.iloc[-3]['Winning_Number']],
-    'Lag_1_Is_Repeating': [last_row['Is_Repeating']],
-    'Lag_2_Is_Repeating': [df.iloc[-2]['Is_Repeating']],
-    'Days_Since_Last_Repeating': [last_row['Days_Since_Last_Repeating'] + 1] # Simplified
-})
+def train_model(csv_path='data/historical_draws.csv'):
+    # Load raw data
+    try:
+        df_raw = pd.read_csv(csv_path)
+    except FileNotFoundError:
+        print(f"Error: {csv_path} not found. Creating dummy data for demonstration.")
+        # Create dummy data if file doesn't exist
+        dates = pd.date_range(start='2022-01-01', end='2026-05-01', freq='D')
+        df_raw = pd.DataFrame({
+            'Date': dates,
+            'Number': np.random.randint(0, 100, size=len(dates))
+        })
 
-probs = rf.predict_proba(next_features)[0]
-classes = rf.classes_
-prob_dict = {str(classes[i]): round(float(probs[i]) * 100, 2) for i in range(len(classes))}
-sorted_probs = sorted(prob_dict.items(), key=lambda x: x[1], reverse=True)
+    # Apply Feature Engineering
+    df = prepare_data(df_raw)
 
-# --- 3. PUSH TO FIREBASE ---
-# Structure the data document
-prediction_data = {
-    "target_date": next_date,
-    "top_prediction": int(sorted_probs[0][0]),
-    "top_probability_percent": sorted_probs[0][1],
-    "runner_up_1": {"number": int(sorted_probs[1][0]), "probability": sorted_probs[1][1]},
-    "runner_up_2": {"number": int(sorted_probs[2][0]), "probability": sorted_probs[2][1]},
-    "runner_up_3": {"number": int(sorted_probs[3][0]), "probability": sorted_probs[3][1]},
-    "timestamp": firestore.SERVER_TIMESTAMP
-}
+    # Define features to use for training
+    features = [
+        'Lag_1', 'Lag_2', 'Lag_3', 'Lag_7',
+        'Month_Sin', 'Month_Cos', 
+        'Day_Sin', 'Day_Cos',
+        'Rolling_Mean_3'
+    ]
 
-# Write to Firestore collection named 'daily_predictions'
-doc_ref = db.collection('daily_predictions').document(target_date_str)
-doc_ref.set(prediction_data)
+    # Drop rows with NaN values created by lags
+    df_clean = df.dropna().copy()
 
-print(f"Successfully pushed prediction for {target_date_str} to Firebase.")
+    # Assign X and Y
+    X = df_clean[features]
+    Y = df_clean['Number']
+
+    print(f"Data prepared successfully. Features: {features}")
+    print(f"X shape: {X.shape}, Y shape: {Y.shape}")
+    
+    # Model training logic would go here (e.g., RandomForest/XGBoost)
+    # model = RandomForestRegressor()
+    # model.fit(X, Y)
+    
+    return X, Y
+
+if __name__ == "__main__":
+    train_model()
