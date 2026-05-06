@@ -39,7 +39,7 @@ def fetch_latest_result(csv_path):
         if today_date in df['Date'].values:
             print(f"Data for {today_date} already exists in the CSV. Skipping append.")
         else:
-            new_row = pd.DataFrame({'Date': [today_date], 'Number': [todays_number]})
+            new_row = pd.DataFrame({'Date': [today_date], 'Winning_Number': [todays_number]})
             df = pd.concat([df, new_row], ignore_index=True)
             df.to_csv(csv_path, index=False)
             print(f"Added today's result ({todays_number}) to the CSV.")
@@ -64,12 +64,13 @@ def prepare_data(df):
     df['Day_Sin'] = np.sin(2 * np.pi * df['Day'] / 31)
     df['Day_Cos'] = np.cos(2 * np.pi * df['Day'] / 31)
 
-    df['Lag_1'] = df['Number'].shift(1)
-    df['Lag_2'] = df['Number'].shift(2)
-    df['Lag_3'] = df['Number'].shift(3)
-    df['Lag_7'] = df['Number'].shift(7) 
+    # Replaced 'Number' with 'Winning_Number'
+    df['Lag_1'] = df['Winning_Number'].shift(1)
+    df['Lag_2'] = df['Winning_Number'].shift(2)
+    df['Lag_3'] = df['Winning_Number'].shift(3)
+    df['Lag_7'] = df['Winning_Number'].shift(7) 
 
-    df['Rolling_Mean_3'] = df['Number'].shift(1).rolling(window=3).mean()
+    df['Rolling_Mean_3'] = df['Winning_Number'].shift(1).rolling(window=3).mean()
     return df
 
 # --- 3. FIREBASE UPLOAD (Updating the Website) ---
@@ -106,7 +107,6 @@ def push_to_firebase(predicted_number):
 
 # --- 4. THE MASTER FUNCTION (Tying it all together) ---
 def train_and_predict():
-    # THIS IS THE LINE WITH THE CORRECT FILE NAME!
     csv_path = 'satta_disawar_historical_data.csv'
     
     # 1. Update data with today's real scraped result
@@ -119,7 +119,7 @@ def train_and_predict():
     df_clean = df.dropna().copy()
 
     X = df_clean[features]
-    Y = df_clean['Number']
+    Y = df_clean['Winning_Number']
 
     # 3. Train the Model
     print("Training the AI Model...")
