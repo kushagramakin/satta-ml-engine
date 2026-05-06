@@ -91,20 +91,19 @@ def push_to_firebase(predicted_number):
 
         db = firestore.client()
         
-        # SMARTER DATE LOGIC:
+        # Determine the correct target date based on the 5 AM draw
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
-        
-        # If it is before 5 AM, the target draw is technically "today". 
-        # If it is after 5 AM, the target draw is "tomorrow".
         if ist_time.hour < 5:
             target_date_obj = ist_time
         else:
             target_date_obj = ist_time + timedelta(days=1)
             
-        target_str = target_date_obj.strftime('%Y-%m-%d')
+        pure_date_obj = target_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
+        target_str = pure_date_obj.strftime('%Y-%m-%d')
         
+        # --- UPLOAD 1: To the 'daily_predictions' folder ---
         prediction_data = {
-            "target_date": target_date_obj,
+            "target_date": pure_date_obj,
             "top_prediction": predicted_number,
             "top_probability_percent": 85.0, 
             "runner_up_1": {"number": predicted_number + 1, "probability": 10.0},
@@ -112,11 +111,17 @@ def push_to_firebase(predicted_number):
             "runner_up_3": {"number": predicted_number + 2, "probability": 2.0},
             "timestamp": firestore.SERVER_TIMESTAMP
         }
-        
-        doc_ref = db.collection('daily_predictions').document(target_str)
-        doc_ref.set(prediction_data)
-        
-        print(f"SUCCESS: Pushed prediction ({predicted_number}) for target date {target_str}!")
+        db.collection('daily_predictions').document(target_str).set(prediction_data)
+        print(f"SUCCESS: Pushed {predicted_number} to 'daily_predictions' for {target_str}!")
+
+        # --- UPLOAD 2: To the 'predictions' -> 'latest_prediction' folder ---
+        latest_data = {
+            'date': target_str,  # Now this will correctly say "2026-05-07"
+            'predicted_number': predicted_number,
+            'updated_at': firestore.SERVER_TIMESTAMP
+        }
+        db.collection('predictions').document('latest_prediction').set(latest_data)
+        print("SUCCESS: Pushed to 'predictions/latest_prediction' folder!")
         
     except Exception as e:
         print(f"Firebase Upload Failed: {e}")
