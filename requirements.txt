@@ -1,0 +1,6 @@
+pandas
+numpy
+scikit-learn
+firebase-admin
+requests
+beautifulsoup4
