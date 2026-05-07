@@ -16,4 +16,4 @@ jobs:
           pip install pandas numpy scikit-learn firebase-admin requests beautifulsoup4
       - env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: python main.py
+        run: python patch_db.py
