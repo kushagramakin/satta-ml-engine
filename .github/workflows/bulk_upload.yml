@@ -16,4 +16,4 @@ jobs:
           pip install pandas firebase-admin
       - env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: python upload_history.py
+        run: python patch_db.py
