@@ -12,6 +12,7 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # 2. The EXACT predictions generated during this project
+# 2. The EXACT predictions generated during this project
 gemini_history = {
     '2026-04-25': 99,
     '2026-04-26': 87,
@@ -23,7 +24,8 @@ gemini_history = {
     '2026-05-02': 92,
     '2026-05-03': 79,
     '2026-05-04': 88,
-    '2026-05-05': 42
+    '2026-05-05': 42,
+    '2026-05-06': 55
 }
 
 print("Patching historical draws with exact known predictions...")
