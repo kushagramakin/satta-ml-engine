@@ -37,27 +37,25 @@ def sync_recent_audit(df):
         date_str = str(row['Date'])
         winning_number = int(row['Winning_Number'])
         
-        # Check what the AI predicted for this exact date
-        pred_ref = db.collection('daily_predictions').document(date_str).get()
-        predicted_number = None
-        is_hit = False
+        # Base update data (will not overwrite manual prediction patches)
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        update_data = {
+            'date': date_obj,
+            'winning_number': winning_number
+        }
         
+        # Check if the live AI predicted anything for this exact date
+        pred_ref = db.collection('daily_predictions').document(date_str).get()
         if pred_ref.exists:
             pred_data = pred_ref.to_dict()
             predicted_number = pred_data.get('top_prediction')
-            if predicted_number == winning_number:
-                is_hit = True
+            update_data['predicted_number'] = predicted_number
+            update_data['is_hit'] = (predicted_number == winning_number)
                 
-        # Force sync to historical_draws
-        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-        db.collection('historical_draws').document(date_str).set({
-            'date': date_obj,
-            'winning_number': winning_number,
-            'predicted_number': predicted_number,
-            'is_hit': is_hit
-        }, merge=True)
+        # Force sync to historical_draws using merge=True
+        db.collection('historical_draws').document(date_str).set(update_data, merge=True)
         
-    print("SUCCESS: Recent historical audit (last 7 days) verified and synced to Firebase!")
+    print("SUCCESS: Recent historical audit verified and synced to Firebase!")
 
 def fetch_latest_result(csv_path):
     print("Attempting to fetch today's result from Satta King Fast...")
