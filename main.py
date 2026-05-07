@@ -228,13 +228,25 @@ def push_to_firebase(predicted_number, confidence_score): # <-- ADDED PARAMETER
         # We calculate runner-up probabilities dynamically based on the main score
         leftover_prob = 100.0 - confidence_score
         
+       # Ensure runner-ups are always less than the top prediction
+        # We use a multiplier (0.8, 0.6, 0.4) to create a logical "decay"
         prediction_data = {
             "target_date": pure_date_obj,
             "top_prediction": predicted_number,
-            "top_probability_percent": confidence_score, # <-- DYNAMIC SCORE
-            "runner_up_1": {"number": (predicted_number + 1) % 100, "probability": round(leftover_prob * 0.5, 2)},
-            "runner_up_2": {"number": (predicted_number - 1) % 100, "probability": round(leftover_prob * 0.3, 2)},
-            "runner_up_3": {"number": (predicted_number + 2) % 100, "probability": round(leftover_prob * 0.2, 2)},
+            "top_probability_percent": confidence_score, 
+            "runner_up_1": {
+                "number": (predicted_number + 1) % 100, 
+                "probability": round(confidence_score * 0.8, 2)
+            },
+            "runner_up_2": {
+                "number": (predicted_number - 1) % 100, 
+                "probability": round(confidence_score * 0.6, 2)
+            },
+            "runner_up_3": {
+                "number": (predicted_number + 2) % 100, 
+                "probability": round(confidence_score * 0.4, 2)
+            },
+            "signals": signals_data,
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection('daily_predictions').document(target_str).set(prediction_data)
