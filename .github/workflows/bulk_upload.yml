@@ -16,4 +16,4 @@ jobs:
           pip install pandas firebase-admin
       - env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: python patch_db.py
+        run: python main.py
