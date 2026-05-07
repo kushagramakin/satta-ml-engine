@@ -209,7 +209,7 @@ def prepare_data(df):
     return df
 
 # --- 4. FIREBASE UPLOAD (Updating the Website) ---
-def push_to_firebase(predicted_number):
+def push_to_firebase(predicted_number, confidence_score): # <-- ADDED PARAMETER
     print("Uploading new prediction to Firebase...")
     if not init_firebase(): return
 
@@ -225,18 +225,22 @@ def push_to_firebase(predicted_number):
         pure_date_obj = target_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
         target_str = pure_date_obj.strftime('%Y-%m-%d')
         
+        # We calculate runner-up probabilities dynamically based on the main score
+        leftover_prob = 100.0 - confidence_score
+        
         prediction_data = {
             "target_date": pure_date_obj,
             "top_prediction": predicted_number,
-            "top_probability_percent": 85.0, 
-            "runner_up_1": {"number": predicted_number + 1, "probability": 10.0},
-            "runner_up_2": {"number": (predicted_number - 1) % 100, "probability": 3.0},
-            "runner_up_3": {"number": (predicted_number + 2) % 100, "probability": 2.0},
+            "top_probability_percent": confidence_score, # <-- DYNAMIC SCORE
+            "runner_up_1": {"number": (predicted_number + 1) % 100, "probability": round(leftover_prob * 0.5, 2)},
+            "runner_up_2": {"number": (predicted_number - 1) % 100, "probability": round(leftover_prob * 0.3, 2)},
+            "runner_up_3": {"number": (predicted_number + 2) % 100, "probability": round(leftover_prob * 0.2, 2)},
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection('daily_predictions').document(target_str).set(prediction_data)
-        print(f"SUCCESS: Pushed {predicted_number} for {target_str}!")
+        print(f"SUCCESS: Pushed {predicted_number} with {confidence_score}% confidence for {target_str}!")
 
+        # ... (keep the rest of your latest_data upload code exactly the same) ...
         latest_data = {
             'date': target_str,  
             'predicted_number': predicted_number,
@@ -273,9 +277,22 @@ def train_and_predict():
     raw_prediction = model.predict(latest_clues)[0]
     final_prediction = int(round(raw_prediction)) % 100
     
-    print(f"Prediction complete. Target number is: {final_prediction}")
+    # --- NEW: DYNAMIC CONFIDENCE SCORING ---
+    # 1. Ask all 100 individual decision trees for their predictions
+    tree_predictions = [tree.predict(latest_clues.values)[0] for tree in model.estimators_]
+    
+    # 2. Calculate the mathematical disagreement (Standard Deviation)
+    std_dev = np.std(tree_predictions)
+    
+    # 3. Convert Standard Deviation to a 0-100% Confidence Score
+    # Using an exponential decay curve: lower variance = exponentially higher confidence
+    # If std_dev is 0, score is 100%. If std_dev is ~7, score drops to ~50%.
+    confidence_score = round(100.0 * np.exp(-std_dev / 10.0), 2)
+    
+    print(f"Prediction complete. Target number is: {final_prediction} (Confidence: {confidence_score}%)")
 
-    push_to_firebase(final_prediction)
+    # Pass BOTH the number and the calculated confidence to Firebase
+    push_to_firebase(final_prediction, confidence_score)
 
 if __name__ == "__main__":
     train_and_predict()
