@@ -92,7 +92,6 @@ def fetch_latest_result(csv_path):
             print(f"Added today's result ({todays_number}) to the CSV.")
             
         # --- TRIGGER THE SELF-HEALING SYNC ---
-        # (This runs no matter what, guaranteeing Firebase is perfectly up to date)
         sync_recent_audit(df)
             
         return df
@@ -103,7 +102,34 @@ def fetch_latest_result(csv_path):
         sync_recent_audit(df)
         return df
 
-# --- 2. THE FEATURE ENGINEER (Preparing the Data) ---
+# --- 2. THE CULTURAL SEASONALITY ENRICHER ---
+def apply_cultural_seasonality(df):
+    """Adds proximity features for major Indian festivals."""
+    festivals = [
+        '2026-01-14', # Makar Sankranti
+        '2026-02-26', # Maha Shivaratri
+        '2026-03-03', # Holi
+        '2026-03-20', # Eid al-Fitr
+        '2026-04-06', # Hanuman Jayanti
+        '2026-05-27', # Eid al-Adha
+        '2026-08-26', # Raksha Bandhan
+        '2026-08-28', # Janmashtami
+        '2026-11-08', # Diwali
+    ]
+    fest_dates = pd.to_datetime(festivals)
+    
+    def days_to_nearest(current_date):
+        # Look for festivals on or after the current date
+        future_fests = fest_dates[fest_dates >= current_date]
+        if not future_fests.empty:
+            return (future_fests[0] - current_date).days
+        return 30 # Default cap
+        
+    df['Days_To_Festival'] = df['Date'].apply(days_to_nearest)
+    df['Festival_Mode'] = (df['Days_To_Festival'] <= 3).astype(int)
+    return df
+
+# --- 3. THE FEATURE ENGINEER (Preparing the Data) ---
 def prepare_data(df):
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date')
@@ -124,21 +150,17 @@ def prepare_data(df):
 
     df['Rolling_Mean_3'] = df['Winning_Number'].shift(1).rolling(window=3).mean()
 
+    # Injecting Cultural Seasonality
+    df = apply_cultural_seasonality(df)
+
     # Advanced ML: Autoregressive Error (Residual Learning)
     df['Past_Predicted_Number'] = df['Rolling_Mean_3']
     
     gemini_history = {
-        '2026-04-25': 99,
-        '2026-04-26': 87,
-        '2026-04-27': 15,
-        '2026-04-28': 68,
-        '2026-04-29': 15,
-        '2026-04-30': 15,
-        '2026-05-01': 76,
-        '2026-05-02': 92,
-        '2026-05-03': 79,
-        '2026-05-04': 88,
-        '2026-05-05': 42 
+        '2026-04-25': 99, '2026-04-26': 87, '2026-04-27': 15,
+        '2026-04-28': 68, '2026-04-29': 15, '2026-04-30': 15,
+        '2026-05-01': 76, '2026-05-02': 92, '2026-05-03': 79,
+        '2026-05-04': 88, '2026-05-05': 42, '2026-05-06': 55
     }
     
     for date_str, pred in gemini_history.items():
@@ -148,7 +170,7 @@ def prepare_data(df):
 
     return df
 
-# --- 3. FIREBASE UPLOAD (Updating the Website) ---
+# --- 4. FIREBASE UPLOAD (Updating the Website) ---
 def push_to_firebase(predicted_number):
     print("Uploading new prediction to Firebase...")
     if not init_firebase(): return
@@ -170,12 +192,12 @@ def push_to_firebase(predicted_number):
             "top_prediction": predicted_number,
             "top_probability_percent": 85.0, 
             "runner_up_1": {"number": predicted_number + 1, "probability": 10.0},
-            "runner_up_2": {"number": predicted_number - 1, "probability": 3.0},
-            "runner_up_3": {"number": predicted_number + 2, "probability": 2.0},
+            "runner_up_2": {"number": (predicted_number - 1) % 100, "probability": 3.0},
+            "runner_up_3": {"number": (predicted_number + 2) % 100, "probability": 2.0},
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection('daily_predictions').document(target_str).set(prediction_data)
-        print(f"SUCCESS: Pushed {predicted_number} to 'daily_predictions' for {target_str}!")
+        print(f"SUCCESS: Pushed {predicted_number} for {target_str}!")
 
         latest_data = {
             'date': target_str,  
@@ -187,7 +209,7 @@ def push_to_firebase(predicted_number):
     except Exception as e:
         print(f"Firebase Upload Failed: {e}")
 
-# --- 4. THE MASTER FUNCTION (Tying it all together) ---
+# --- 5. THE MASTER FUNCTION (Tying it all together) ---
 def train_and_predict():
     csv_path = 'satta_disawar_historical_data.csv'
     
@@ -197,22 +219,23 @@ def train_and_predict():
     features = [
         'Lag_1', 'Lag_2', 'Lag_3', 'Lag_7', 
         'Month_Sin', 'Month_Cos', 'Day_Sin', 'Day_Cos', 
-        'Rolling_Mean_3', 'Lag_1_Error'
+        'Rolling_Mean_3', 'Lag_1_Error',
+        'Days_To_Festival', 'Festival_Mode'
     ]
     df_clean = df.dropna().copy()
 
     X = df_clean[features]
     Y = df_clean['Winning_Number']
 
-    print("Training the AI Model with Residual Learning...")
+    print("Training the AI Model with Cultural Seasonality & Residual Learning...")
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, Y)
 
     latest_clues = df_clean.tail(1)[features]
     raw_prediction = model.predict(latest_clues)[0]
-    final_prediction = int(round(raw_prediction))
+    final_prediction = int(round(raw_prediction)) % 100
     
-    print(f"Prediction complete. Tomorrow's number is: {final_prediction}")
+    print(f"Prediction complete. Target number is: {final_prediction}")
 
     push_to_firebase(final_prediction)
 
