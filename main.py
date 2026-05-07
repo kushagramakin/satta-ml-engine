@@ -24,32 +24,40 @@ def init_firebase():
             return False
     return True
 
-# --- 1. THE WEB SCRAPER & AUDIT LOGGER ---
-def update_historical_audit(date_str, winning_number):
-    """Grabs yesterday's prediction and logs it with today's actual result."""
+# --- 1. THE WEB SCRAPER & SELF-HEALING AUDIT ---
+def sync_recent_audit(df):
+    """Self-healing function: Always syncs the last 7 days of CSV to Firebase."""
     if not init_firebase(): return
     db = firestore.client()
     
-    # Check what the AI predicted for this exact date yesterday
-    pred_ref = db.collection('daily_predictions').document(date_str).get()
-    predicted_number = None
-    is_hit = False
+    # Grab the last 7 rows of the dataset
+    recent_df = df.tail(7)
     
-    if pred_ref.exists:
-        pred_data = pred_ref.to_dict()
-        predicted_number = pred_data.get('top_prediction')
-        if predicted_number == winning_number:
-            is_hit = True
-            
-    # Save the official matched record to historical_draws for the frontend charts
-    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-    db.collection('historical_draws').document(date_str).set({
-        'date': date_obj,
-        'winning_number': winning_number,
-        'predicted_number': predicted_number,
-        'is_hit': is_hit
-    })
-    print(f"AUDIT LOGGED - Date: {date_str} | Actual: {winning_number} | Predicted: {predicted_number}")
+    for _, row in recent_df.iterrows():
+        date_str = str(row['Date'])
+        winning_number = int(row['Winning_Number'])
+        
+        # Check what the AI predicted for this exact date
+        pred_ref = db.collection('daily_predictions').document(date_str).get()
+        predicted_number = None
+        is_hit = False
+        
+        if pred_ref.exists:
+            pred_data = pred_ref.to_dict()
+            predicted_number = pred_data.get('top_prediction')
+            if predicted_number == winning_number:
+                is_hit = True
+                
+        # Force sync to historical_draws
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        db.collection('historical_draws').document(date_str).set({
+            'date': date_obj,
+            'winning_number': winning_number,
+            'predicted_number': predicted_number,
+            'is_hit': is_hit
+        }, merge=True)
+        
+    print("SUCCESS: Recent historical audit (last 7 days) verified and synced to Firebase!")
 
 def fetch_latest_result(csv_path):
     print("Attempting to fetch today's result from Satta King Fast...")
@@ -85,14 +93,17 @@ def fetch_latest_result(csv_path):
             df.to_csv(csv_path, index=False)
             print(f"Added today's result ({todays_number}) to the CSV.")
             
-            # --- TRIGGER THE AUDIT UPDATE ---
-            update_historical_audit(today_date, todays_number)
+        # --- TRIGGER THE SELF-HEALING SYNC ---
+        # (This runs no matter what, guaranteeing Firebase is perfectly up to date)
+        sync_recent_audit(df)
             
         return df
     
     except Exception as e:
         print(f"Scraping failed: {e}. Proceeding with existing CSV data.")
-        return pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path)
+        sync_recent_audit(df)
+        return df
 
 # --- 2. THE FEATURE ENGINEER (Preparing the Data) ---
 def prepare_data(df):
