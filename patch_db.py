@@ -22,7 +22,8 @@ gemini_history = {
     '2026-05-01': 76,
     '2026-05-02': 92,
     '2026-05-03': 79,
-    '2026-05-04': 88
+    '2026-05-04': 88,
+    '2026-05-05': 42
 }
 
 print("Patching historical draws with exact known predictions...")
