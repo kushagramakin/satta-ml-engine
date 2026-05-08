@@ -187,51 +187,47 @@ def prepare_data(df):
     return df
 
 # --- 4. FIREBASE UPLOAD (Updating the Website) ---
-def push_to_firebase(predicted_number, confidence_score, signals_data):
-    print("Uploading new prediction to Firebase...")
+def push_to_firebase(top_preds, signals_data):
+    print("Uploading new multi-prediction to Firebase...")
     if not init_firebase(): return
 
     try:
         db = firestore.client()
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
         
-        if ist_time.hour < 5:
-            target_date_obj = ist_time
-        else:
-            target_date_obj = ist_time + timedelta(days=1)
-            
+        target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
         pure_date_obj = target_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
         target_str = pure_date_obj.strftime('%Y-%m-%d')
         
-        # REALISTIC DECAY LOGIC (Kept exactly as you requested)
+        # Now using the ACTUAL top 4 probabilities from the ML model
         prediction_data = {
             "target_date": pure_date_obj,
-            "top_prediction": predicted_number,
-            "top_probability_percent": confidence_score, 
+            "top_prediction": top_preds[0]['number'],
+            "top_probability_percent": top_preds[0]['prob'], 
             "runner_up_1": {
-                "number": (predicted_number + 1) % 100, 
-                "probability": round(confidence_score * 0.8, 2)
+                "number": top_preds[1]['number'], 
+                "probability": top_preds[1]['prob']
             },
             "runner_up_2": {
-                "number": (predicted_number - 1) % 100, 
-                "probability": round(confidence_score * 0.6, 2)
+                "number": top_preds[2]['number'], 
+                "probability": top_preds[2]['prob']
             },
             "runner_up_3": {
-                "number": (predicted_number + 2) % 100, 
-                "probability": round(confidence_score * 0.4, 2)
+                "number": top_preds[3]['number'], 
+                "probability": top_preds[3]['prob']
             },
             "signals": signals_data,
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection('daily_predictions').document(target_str).set(prediction_data)
-        print(f"SUCCESS: Pushed {predicted_number} with {confidence_score}% confidence for {target_str}!")
-
+        
         latest_data = {
             'date': target_str,  
-            'predicted_number': predicted_number,
+            'predicted_number': top_preds[0]['number'],
             'updated_at': firestore.SERVER_TIMESTAMP
         }
         db.collection('predictions').document('latest_prediction').set(latest_data)
+        print(f"SUCCESS: Pushed actual top matrix to Firebase!")
         
     except Exception as e:
         print(f"Firebase Upload Failed: {e}")
@@ -255,27 +251,31 @@ def train_and_predict():
     Y = df_clean['Winning_Number']
 
     print("Training the AI Model using a Classifier voting engine...")
-    
-    # --- NEW ENGINE ---
-    # Using Classifier instead of Regressor to prevent averaging
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, Y)
 
     latest_clues = df_clean.tail(1)[features]
     
-    # 1. Ask the 100 trees to vote on the exact bucket
-    final_prediction = int(model.predict(latest_clues)[0])
-    
-    # 2. Extract the actual native probability of that winning vote
+    # Extract the full probability array
     probabilities = model.predict_proba(latest_clues)[0]
-    confidence_score = round(max(probabilities) * 100, 2)
+    classes = model.classes_
+    
+    # Get the indices of the top 4 highest probabilities
+    top_4_indices = np.argsort(probabilities)[-4:][::-1]
+    
+    # Map them to our list
+    top_preds = [
+        {"number": int(classes[idx]), "prob": round(probabilities[idx] * 100, 2)}
+        for idx in top_4_indices
+    ]
+    
+    final_prediction = top_preds[0]['number']
+    confidence_score = top_preds[0]['prob']
     
     # --- GENERATE THE LIVE SIGNAL STREAM ---
     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    
     top_feature_index = np.argmax(model.feature_importances_)
     top_feature_name = features[top_feature_index].upper()
-    
     fest_days = int(latest_clues['Days_To_Festival'].values[0])
     lag_err = float(latest_clues['Lag_1_Error'].values[0])
     
@@ -287,9 +287,7 @@ def train_and_predict():
         { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": "PATTERN_CLASSIFICATION_NODE", "confidence": "100%", "status": "STABLE" }
     ]
     
-    print(f"Prediction complete. Target number is: {final_prediction} (Confidence: {confidence_score}%)")
-
-    push_to_firebase(final_prediction, confidence_score, live_signals)
+    push_to_firebase(top_preds, live_signals)
 
 if __name__ == "__main__":
     train_and_predict()
