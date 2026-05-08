@@ -204,18 +204,11 @@ def push_to_firebase(top_preds, signals_data):
             "target_date": pure_date_obj,
             "top_prediction": top_preds[0]['number'],
             "top_probability_percent": top_preds[0]['prob'], 
-            "runner_up_1": {
-                "number": top_preds[1]['number'], 
-                "probability": top_preds[1]['prob']
-            },
-            "runner_up_2": {
-                "number": top_preds[2]['number'], 
-                "probability": top_preds[2]['prob']
-            },
-            "runner_up_3": {
-                "number": top_preds[3]['number'], 
-                "probability": top_preds[3]['prob']
-            },
+            "runner_up_1": { "number": top_preds[1]['number'], "probability": top_preds[1]['prob'] },
+            "runner_up_2": { "number": top_preds[2]['number'], "probability": top_preds[2]['prob'] },
+            "runner_up_3": { "number": top_preds[3]['number'], "probability": top_preds[3]['prob'] },
+            # Add this new line:
+            "runner_up_4": { "number": top_preds[4]['number'], "probability": top_preds[4]['prob'] },
             "signals": signals_data,
             "timestamp": firestore.SERVER_TIMESTAMP
         }
@@ -260,13 +253,11 @@ def train_and_predict():
     probabilities = model.predict_proba(latest_clues)[0]
     classes = model.classes_
     
-    # Get the indices of the top 4 highest probabilities
-    top_4_indices = np.argsort(probabilities)[-4:][::-1]
+    top_5_indices = np.argsort(probabilities)[-5:][::-1]
     
-    # Map them to our list
     top_preds = [
         {"number": int(classes[idx]), "prob": round(probabilities[idx] * 100, 2)}
-        for idx in top_4_indices
+        for idx in top_5_indices
     ]
     
     final_prediction = top_preds[0]['number']
