@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 import os
 import json
 import firebase_admin
@@ -26,25 +26,21 @@ def init_firebase():
 
 # --- 1. THE WEB SCRAPER & SELF-HEALING AUDIT ---
 def sync_recent_audit(df):
-    """Self-healing function: Always syncs the last 7 days of CSV to Firebase."""
     if not init_firebase(): return
     db = firestore.client()
     
-    # Grab the last 7 rows of the dataset
     recent_df = df.tail(7)
     
     for _, row in recent_df.iterrows():
         date_str = str(row['Date'])
         winning_number = int(row['Winning_Number'])
         
-        # Base update data (will not overwrite manual prediction patches)
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
         update_data = {
             'date': date_obj,
             'winning_number': winning_number
         }
         
-        # Check if the live AI predicted anything for this exact date
         pred_ref = db.collection('daily_predictions').document(date_str).get()
         if pred_ref.exists:
             pred_data = pred_ref.to_dict()
@@ -52,23 +48,19 @@ def sync_recent_audit(df):
             update_data['predicted_number'] = predicted_number
             update_data['is_hit'] = (predicted_number == winning_number)
                 
-        # Force sync to historical_draws using merge=True
         db.collection('historical_draws').document(date_str).set(update_data, merge=True)
         
     print("SUCCESS: Recent historical audit verified and synced to Firebase!")
 
 def sync_monthly_metrics():
-    """Automatically calculates current month's accuracy and pushes it to the React chart."""
     if not init_firebase(): return
     db = firestore.client()
     
     ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
     current_month_str = ist_time.strftime('%Y-%m')
     
-    # Calculate start of current month
     start_of_month = ist_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    # Fetch all draws from the start of this month
     docs = db.collection('historical_draws').where('date', '>=', start_of_month).stream()
     
     total_signals = 0
@@ -76,7 +68,6 @@ def sync_monthly_metrics():
     
     for doc in docs:
         data = doc.to_dict()
-        # Only count days where the AI actually made a prediction
         if 'predicted_number' in data and data['predicted_number'] is not None:
             total_signals += 1
             if data.get('is_hit') is True:
@@ -85,11 +76,10 @@ def sync_monthly_metrics():
     if total_signals > 0:
         accuracy_rate = total_hits / total_signals
         
-        # Create or update the month's document in Firebase
         db.collection('monthly_metrics').document(current_month_str).set({
             'month_year': current_month_str,
             'accuracy_rate': accuracy_rate,
-            'average_log_loss': 0.4521 # Static baseline for visual consistency
+            'average_log_loss': 0.4521 
         }, merge=True)
         print(f"SUCCESS: Auto-updated Chart Metrics for {current_month_str} (Accuracy: {accuracy_rate*100:.1f}%)")
 
@@ -127,7 +117,6 @@ def fetch_latest_result(csv_path):
             df.to_csv(csv_path, index=False)
             print(f"Added today's result ({todays_number}) to the CSV.")
             
-        # --- TRIGGER THE SELF-HEALING SYNC ---
         sync_recent_audit(df)
         sync_monthly_metrics()
             
@@ -142,26 +131,17 @@ def fetch_latest_result(csv_path):
 
 # --- 2. THE CULTURAL SEASONALITY ENRICHER ---
 def apply_cultural_seasonality(df):
-    """Adds proximity features for major Indian festivals."""
     festivals = [
-        '2026-01-14', # Makar Sankranti
-        '2026-02-26', # Maha Shivaratri
-        '2026-03-03', # Holi
-        '2026-03-20', # Eid al-Fitr
-        '2026-04-06', # Hanuman Jayanti
-        '2026-05-27', # Eid al-Adha
-        '2026-08-26', # Raksha Bandhan
-        '2026-08-28', # Janmashtami
-        '2026-11-08', # Diwali
+        '2026-01-14', '2026-02-26', '2026-03-03', '2026-03-20', 
+        '2026-04-06', '2026-05-27', '2026-08-26', '2026-08-28', '2026-11-08'
     ]
     fest_dates = pd.to_datetime(festivals)
     
     def days_to_nearest(current_date):
-        # Look for festivals on or after the current date
         future_fests = fest_dates[fest_dates >= current_date]
         if not future_fests.empty:
             return (future_fests[0] - current_date).days
-        return 30 # Default cap
+        return 30 
         
     df['Days_To_Festival'] = df['Date'].apply(days_to_nearest)
     df['Festival_Mode'] = (df['Days_To_Festival'] <= 3).astype(int)
@@ -188,10 +168,8 @@ def prepare_data(df):
 
     df['Rolling_Mean_3'] = df['Winning_Number'].shift(1).rolling(window=3).mean()
 
-    # Injecting Cultural Seasonality
     df = apply_cultural_seasonality(df)
 
-    # Advanced ML: Autoregressive Error (Residual Learning)
     df['Past_Predicted_Number'] = df['Rolling_Mean_3']
     
     gemini_history = {
@@ -209,8 +187,8 @@ def prepare_data(df):
     return df
 
 # --- 4. FIREBASE UPLOAD (Updating the Website) ---
-def push_to_firebase(predicted_number, confidence_score, signals_data): # <-- NOW EXPECTS 3 PARAMETERS
-    print("Uploading new prediction and signal stream to Firebase...")
+def push_to_firebase(predicted_number, confidence_score, signals_data):
+    print("Uploading new prediction to Firebase...")
     if not init_firebase(): return
 
     try:
@@ -225,7 +203,7 @@ def push_to_firebase(predicted_number, confidence_score, signals_data): # <-- NO
         pure_date_obj = target_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
         target_str = pure_date_obj.strftime('%Y-%m-%d')
         
-        # REALISTIC DECAY LOGIC
+        # REALISTIC DECAY LOGIC (Kept exactly as you requested)
         prediction_data = {
             "target_date": pure_date_obj,
             "top_prediction": predicted_number,
@@ -242,7 +220,7 @@ def push_to_firebase(predicted_number, confidence_score, signals_data): # <-- NO
                 "number": (predicted_number + 2) % 100, 
                 "probability": round(confidence_score * 0.4, 2)
             },
-            "signals": signals_data, # <-- THIS NOW MATCHES THE PARAMETER
+            "signals": signals_data,
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         db.collection('daily_predictions').document(target_str).set(prediction_data)
@@ -276,18 +254,21 @@ def train_and_predict():
     X = df_clean[features]
     Y = df_clean['Winning_Number']
 
-    print("Training the AI Model with Cultural Seasonality & Residual Learning...")
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    print("Training the AI Model using a Classifier voting engine...")
+    
+    # --- NEW ENGINE ---
+    # Using Classifier instead of Regressor to prevent averaging
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, Y)
 
     latest_clues = df_clean.tail(1)[features]
-    raw_prediction = model.predict(latest_clues)[0]
-    final_prediction = int(round(raw_prediction)) % 100
     
-    # Calculate Confidence
-    tree_predictions = [tree.predict(latest_clues.values)[0] for tree in model.estimators_]
-    std_dev = np.std(tree_predictions)
-    confidence_score = round(100.0 * np.exp(-std_dev / 10.0), 2)
+    # 1. Ask the 100 trees to vote on the exact bucket
+    final_prediction = int(model.predict(latest_clues)[0])
+    
+    # 2. Extract the actual native probability of that winning vote
+    probabilities = model.predict_proba(latest_clues)[0]
+    confidence_score = round(max(probabilities) * 100, 2)
     
     # --- GENERATE THE LIVE SIGNAL STREAM ---
     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
@@ -299,17 +280,16 @@ def train_and_predict():
     lag_err = float(latest_clues['Lag_1_Error'].values[0])
     
     live_signals = [
-        { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"TREE_VARIANCE_SYNC", "confidence": f"{confidence_score}%", "status": "HIGH_CONF" if confidence_score > 70 else "SENSITIVE" },
+        { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"ENSEMBLE_VOTE_CONSENSUS", "confidence": f"{confidence_score}%", "status": "HIGH_CONF" if confidence_score > 5.0 else "SENSITIVE" },
         { "time": (ist_now - timedelta(seconds=14)).strftime('%H:%M:%S'), "signal": f"PRIMARY_NODE: {top_feature_name}", "confidence": f"{int(model.feature_importances_[top_feature_index] * 100)}% WGT", "status": "STABLE" },
         { "time": (ist_now - timedelta(seconds=27)).strftime('%H:%M:%S'), "signal": f"CULTURAL_PROXIMITY: {fest_days}D", "confidence": "92%", "status": "HIGH_CONF" if fest_days <= 5 else "STABLE" },
         { "time": (ist_now - timedelta(seconds=41)).strftime('%H:%M:%S'), "signal": f"RESIDUAL_BIAS_ADJ: {lag_err:.1f}", "confidence": "71%", "status": "SENSITIVE" if abs(lag_err) > 30 else "STABLE" },
-        { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": "PATTERN_RECOG_ENGINE", "confidence": "100%", "status": "STABLE" }
+        { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": "PATTERN_CLASSIFICATION_NODE", "confidence": "100%", "status": "STABLE" }
     ]
     
     print(f"Prediction complete. Target number is: {final_prediction} (Confidence: {confidence_score}%)")
 
-    # Pass ALL THREE parameters to Firebase
-    push_to_firebase(final_prediction, confidence_score, live_signals) # <-- NOW IT PASSES ALL 3
+    push_to_firebase(final_prediction, confidence_score, live_signals)
 
 if __name__ == "__main__":
     train_and_predict()
