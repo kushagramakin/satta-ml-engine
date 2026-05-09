@@ -230,6 +230,17 @@ def train_and_predict():
     csv_path = 'satta_disawar_historical_data.csv'
     
     df_raw = fetch_latest_result(csv_path)
+    
+    # --- FIX 1: INJECTING THE "TOMORROW" DUMMY ROW ---
+    ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
+    target_str = target_date_obj.strftime('%Y-%m-%d')
+    
+    if target_str not in df_raw['Date'].values:
+        dummy_row = pd.DataFrame({'Date': [target_str], 'Winning_Number': [np.nan]})
+        df_raw = pd.concat([df_raw, dummy_row], ignore_index=True)
+    
+    # Run the feature engineer (which will cleanly shift today's number into tomorrow's Lag_1)
     df = prepare_data(df_raw)
 
     features = [
@@ -238,21 +249,28 @@ def train_and_predict():
         'Rolling_Mean_3', 'Lag_1_Error',
         'Days_To_Festival', 'Festival_Mode'
     ]
-    df_clean = df.dropna().copy()
+    
+    # Clean the training data (Exclude the dummy row since we don't know the answer yet)
+    train_df = df.dropna(subset=['Winning_Number']).copy()
+    train_df = train_df.dropna(subset=features)
 
-    X = df_clean[features]
-    Y = df_clean['Winning_Number']
+    X = train_df[features]
+    Y = train_df['Winning_Number']
 
     print("Training the AI Model using a Classifier voting engine...")
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, Y)
 
-    latest_clues = df_clean.tail(1)[features]
+    # --- FIX 2: PREDICTING THE FUTURE ---
+    # Extract the features specifically for tomorrow's dummy row
+    tomorrow_clues = df.tail(1)[features].copy()
+    tomorrow_clues = tomorrow_clues.fillna(0) 
     
-    # Extract the full probability array
-    probabilities = model.predict_proba(latest_clues)[0]
+    # Cast the votes
+    probabilities = model.predict_proba(tomorrow_clues)[0]
     classes = model.classes_
     
+    # Get the indices of the top 5 highest probabilities
     top_5_indices = np.argsort(probabilities)[-5:][::-1]
     
     top_preds = [
@@ -267,8 +285,8 @@ def train_and_predict():
     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
     top_feature_index = np.argmax(model.feature_importances_)
     top_feature_name = features[top_feature_index].upper()
-    fest_days = int(latest_clues['Days_To_Festival'].values[0])
-    lag_err = float(latest_clues['Lag_1_Error'].values[0])
+    fest_days = int(tomorrow_clues['Days_To_Festival'].values[0])
+    lag_err = float(tomorrow_clues['Lag_1_Error'].values[0])
     
     live_signals = [
         { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"ENSEMBLE_VOTE_CONSENSUS", "confidence": f"{confidence_score}%", "status": "HIGH_CONF" if confidence_score > 5.0 else "SENSITIVE" },
