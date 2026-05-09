@@ -5,7 +5,7 @@ on:
     # Runs at 00:18 UTC every day (5:48 AM IST)
     # Uses an odd minute to avoid GitHub's server rush hour dropping the task
     #- cron: '18 0 * * *'
-    - cron: '42 0 * * *'
+    - cron: '44 5 * * *'
   workflow_dispatch: 
 
 jobs:
