@@ -28,3 +28,11 @@ jobs:
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python main.py
+
+      - name: Commit Updated CSV
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add satta_disawar_historical_data.csv
+          git commit -m "Auto-update historical data" || echo "No changes to commit"
+          git push
