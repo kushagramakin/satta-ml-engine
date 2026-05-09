@@ -83,6 +83,9 @@ def sync_monthly_metrics():
         }, merge=True)
         print(f"SUCCESS: Auto-updated Chart Metrics for {current_month_str} (Accuracy: {accuracy_rate*100:.1f}%)")
 
+# --- 1. THE WEB SCRAPER & SELF-HEALING AUDIT ---
+# ... (Keep the sync_recent_audit and sync_monthly_metrics functions as they are) ...
+
 def fetch_latest_result(csv_path):
     print("Attempting to fetch today's result from Satta King Fast...")
     url = "https://satta-king-fast.com/desawar/satta-result-chart/ds/" 
@@ -112,10 +115,20 @@ def fetch_latest_result(csv_path):
         if today_date in df['Date'].values:
             print(f"Data for {today_date} already exists in the CSV. Skipping append.")
         else:
-            new_row = pd.DataFrame({'Date': [today_date], 'Winning_Number': [todays_number]})
+            dt_obj = datetime.strptime(today_date, '%Y-%m-%d')
+            
+            new_row = pd.DataFrame([{
+                'Date': today_date,
+                'Year': float(dt_obj.year),
+                'Month': float(dt_obj.month),
+                'Month_Name': dt_obj.strftime('%B'),
+                'Day': float(dt_obj.day),
+                'Winning_Number': float(todays_number)
+            }])
+            
             df = pd.concat([df, new_row], ignore_index=True)
             df.to_csv(csv_path, index=False)
-            print(f"Added today's result ({todays_number}) to the CSV.")
+            print(f"Added today's result ({todays_number}) to the CSV with fully populated date columns.")
             
         sync_recent_audit(df)
         sync_monthly_metrics()
@@ -128,7 +141,7 @@ def fetch_latest_result(csv_path):
         sync_recent_audit(df)
         sync_monthly_metrics()
         return df
-
+        
 # --- 2. THE CULTURAL SEASONALITY ENRICHER ---
 def apply_cultural_seasonality(df):
     festivals = [
