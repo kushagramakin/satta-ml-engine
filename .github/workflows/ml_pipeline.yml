@@ -2,10 +2,10 @@ name: Daily Satta ML Predictor
 
 on:
   schedule:
-    # Runs at 00:15 UTC every day (5:45 AM IST)
-    # This ensures the Desawar result is published before scraping
-    - cron: '15 0 * * *'
-  workflow_dispatch: # Allows you to click a button to run it manually
+    # Runs at 00:18 UTC every day (5:48 AM IST)
+    # Uses an odd minute to avoid GitHub's server rush hour dropping the task
+    - cron: '18 0 * * *'
+  workflow_dispatch: 
 
 jobs:
   run-ml-model:
