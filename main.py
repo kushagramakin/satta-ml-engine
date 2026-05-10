@@ -299,6 +299,7 @@ def train_and_predict():
 
     # --- DIMENSION 3: OPTUNA HYPERPARAMETER TUNING ---
     print("\nRunning Optuna for dynamic hyperparameter tuning (15 trials)...")
+    """    
     optuna.logging.set_verbosity(optuna.logging.WARNING) # Keep logs clean
     
     def objective(trial):
@@ -316,6 +317,34 @@ def train_and_predict():
     study.optimize(objective, n_trials=15)
     best_params = study.best_params
     print(f"Optimal parameters for today's market: {best_params}")
+    """
+    print("\nRunning Multi-Dimensional Optuna Tuning...")
+    
+    def objective(trial):
+        # 1. AI decides how many features to keep (from 40% to 100%)
+        prune_ratio = trial.suggest_float('prune_ratio', 0.4, 1.0)
+        
+        # 2. AI decides model complexity
+        params = {
+            'max_depth': trial.suggest_int('max_depth', 3, 8),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 150),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2)
+        }
+        
+        # Apply the dynamic pruning for this specific trial
+        keep_count = max(1, int(len(sorted_features) * prune_ratio))
+        current_top_features = [f[0] for f in sorted_features[:keep_count]]
+        X_trial = train_df[current_top_features]
+        
+        model = XGBClassifier(**params, random_state=42, eval_metric='mlogloss')
+        score = cross_val_score(model, X_trial, Y, cv=3, scoring='accuracy').mean()
+        return score
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=20) # Increased to 20 to handle extra dimension
+    
+    best_prune = study.best_params['prune_ratio']
+    print(f"Optimal Pruning for today: {int(best_prune*100)}% of features.")
 
     # --- TRAINING FINAL XGBOOST ENGINE ---
     print("\nTraining Final XGBoost Engine with optimal parameters...")
@@ -363,7 +392,7 @@ def train_and_predict():
         { "time": (ist_now - timedelta(seconds=14)).strftime('%H:%M:%S'), "signal": f"PRIMARY_NODE: {top_feature_name}", "confidence": f"{int(final_model.feature_importances_[top_feature_index] * 100)}% WGT", "status": "STABLE" },
         { "time": (ist_now - timedelta(seconds=27)).strftime('%H:%M:%S'), "signal": f"CULTURAL_PROXIMITY: {fest_days}D", "confidence": "92%", "status": "HIGH_CONF" if fest_days <= 5 else "STABLE" },
         { "time": (ist_now - timedelta(seconds=41)).strftime('%H:%M:%S'), "signal": f"FOURIER_PULSE_DETECTED: {fft_pulse:.2f}", "confidence": "88%", "status": "SENSITIVE" if fft_pulse > 10 else "STABLE" },
-        { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": f"OPTUNA_TUNED_XGBOOST", "confidence": "100%", "status": "STABLE" }
+        { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": f"OPTUNA_TUNED_XGBOOST", "confidence": "100%", "status": "STABL
     ]
     
     push_to_firebase(top_preds, live_signals)
