@@ -4,3 +4,5 @@ scikit-learn
 firebase-admin
 requests
 beautifulsoup4
+xgboost
+optuna
