@@ -343,7 +343,7 @@ def train_and_predict():
     top_5_indices = np.argsort(probabilities)[-5:][::-1]
     
     top_preds = [
-        {"number": int(classes[idx]), "prob": round(probabilities[idx] * 100, 2)}
+        {"number": int(classes[idx]), "prob": float(round(probabilities[idx] * 100, 2))}
         for idx in top_5_indices
     ]
     
