@@ -284,7 +284,7 @@ def train_and_predict():
     # --- TIME-DECAY WEIGHTING (90-day half-life) ---
     max_date = train_df['Date'].max()
     train_df['Days_Old'] = (max_date - train_df['Date']).dt.days
-    time_decay_weights = np.exp(-train_df['Days_Old'] / 90) 
+    time_decay_weights = 1 / (1 + (train_df['Days_Old'] / 365))
 
     print(f"Total rows for training: {len(train_df)}")
 
@@ -310,7 +310,7 @@ def train_and_predict():
     X_pruned = train_df[top_features]
     
     print("\nTraining Final Engine with optimal features and time-decay weights...")
-    final_model = RandomForestClassifier(n_estimators=200, max_depth=12, random_state=42)
+    final_model = RandomForestClassifier(n_estimators=200, max_depth=7, random_state=42)
     final_model.fit(X_pruned, Y, sample_weight=time_decay_weights)
 
     # Extract features for tomorrow using ONLY the pruned top features
