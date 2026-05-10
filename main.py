@@ -47,7 +47,7 @@ def sync_recent_audit(df):
             predicted_number = pred_data.get('top_prediction')
             update_data['predicted_number'] = predicted_number
             update_data['is_hit'] = (predicted_number == winning_number)
-                
+
         db.collection('historical_draws').document(date_str).set(update_data, merge=True)
         
     print("SUCCESS: Recent historical audit verified and synced to Firebase!")
@@ -81,10 +81,8 @@ def sync_monthly_metrics():
             'accuracy_rate': accuracy_rate,
             'average_log_loss': 0.4521 
         }, merge=True)
-        print(f"SUCCESS: Auto-updated Chart Metrics for {current_month_str} (Accuracy: {accuracy_rate*100:.1f}%)")
 
-# --- 1. THE WEB SCRAPER & SELF-HEALING AUDIT ---
-# ... (Keep the sync_recent_audit and sync_monthly_metrics functions as they are) ...
+        print(f"SUCCESS: Auto-updated Chart Metrics for {current_month_str} (Accuracy: {accuracy_rate*100:.1f}%)")
 
 def fetch_latest_result(csv_path):
     print("Attempting to fetch today's result from Satta King Fast...")
@@ -111,7 +109,7 @@ def fetch_latest_result(csv_path):
         today_date = ist_time.strftime('%Y-%m-%d')
         
         df = pd.read_csv(csv_path)
-        
+
         if today_date in df['Date'].values:
             print(f"Data for {today_date} already exists in the CSV. Skipping append.")
         else:
@@ -141,7 +139,7 @@ def fetch_latest_result(csv_path):
         sync_recent_audit(df)
         sync_monthly_metrics()
         return df
-        
+
 # --- 2. THE CULTURAL SEASONALITY ENRICHER ---
 def apply_cultural_seasonality(df):
     festivals = [
@@ -160,42 +158,59 @@ def apply_cultural_seasonality(df):
     df['Festival_Mode'] = (df['Days_To_Festival'] <= 3).astype(int)
     return df
 
-# --- 3. THE FEATURE ENGINEER (Preparing the Data) ---
+# --- 3. THE FEATURE ENGINEER (Preparing the Data with Advanced Dimensions) ---
 def prepare_data(df):
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date')
 
+    # Basic Time & Target Setup
     df['Month'] = df['Date'].dt.month
     df['Day'] = df['Date'].dt.day
-    df['DayOfWeek'] = df['Date'].dt.dayofweek
-
     df['Month_Sin'] = np.sin(2 * np.pi * df['Month'] / 12)
     df['Month_Cos'] = np.cos(2 * np.pi * df['Month'] / 12)
-    df['Day_Sin'] = np.sin(2 * np.pi * df['Day'] / 31)
-    df['Day_Cos'] = np.cos(2 * np.pi * df['Day'] / 31)
+    
+    # Target Deconstruction
+    df['Tens_Digit'] = df['Winning_Number'] // 10
+    df['Units_Digit'] = df['Winning_Number'] % 10
 
+    # Lags & Binaries
     df['Lag_1'] = df['Winning_Number'].shift(1)
     df['Lag_2'] = df['Winning_Number'].shift(2)
     df['Lag_3'] = df['Winning_Number'].shift(3)
-    df['Lag_7'] = df['Winning_Number'].shift(7) 
+    
+    df['Is_High'] = (df['Winning_Number'] >= 50).astype(int)
+    df['Is_Even'] = (df['Winning_Number'] % 2 == 0).astype(int)
+    
+    # Lagged Binaries
+    df['Lag_1_Is_High'] = df['Is_High'].shift(1)
+    df['Lag_1_Is_Even'] = df['Is_Even'].shift(1)
 
-    df['Rolling_Mean_3'] = df['Winning_Number'].shift(1).rolling(window=3).mean()
+    # --- DIMENSION: DRAW GAPS (Time-Since-Last) ---
+    df['Days_Since_Even'] = df.groupby((df['Is_Even'] == 1).cumsum()).cumcount()
+    df['Days_Since_High'] = df.groupby((df['Is_High'] == 1).cumsum()).cumcount()
+    
+    df['Lag_1_Days_Since_Even'] = df['Days_Since_Even'].shift(1)
+    df['Lag_1_Days_Since_High'] = df['Days_Since_High'].shift(1)
 
+    # --- DIMENSION: VOLATILITY & ENTROPY ---
+    df['Rolling_Std_14'] = df['Winning_Number'].shift(1).rolling(window=14).std()
+    df['Rolling_Mean_30'] = df['Winning_Number'].shift(1).rolling(window=30).mean()
+    
+    # Z-Score Calculation
+    df['Z_Score_30'] = (df['Lag_1'] - df['Rolling_Mean_30']) / df['Rolling_Std_14']
+    
+    # --- DIMENSION: TREND RATIOS ---
+    df['Even_Ratio_30d'] = df['Lag_1_Is_Even'].rolling(window=30).mean()
+    df['High_Ratio_30d'] = df['Lag_1_Is_High'].rolling(window=30).mean()
+    
+    df['EMA_7'] = df['Lag_1'].ewm(span=7, adjust=False).mean()
+    df['EMA_30'] = df['Lag_1'].ewm(span=30, adjust=False).mean()
+
+    # Cultural Seasonality
     df = apply_cultural_seasonality(df)
-
-    df['Past_Predicted_Number'] = df['Rolling_Mean_3']
     
-    gemini_history = {
-        '2026-04-25': 99, '2026-04-26': 87, '2026-04-27': 15,
-        '2026-04-28': 68, '2026-04-29': 15, '2026-04-30': 15,
-        '2026-05-01': 76, '2026-05-02': 92, '2026-05-03': 79,
-        '2026-05-04': 88, '2026-05-05': 42, '2026-05-06': 55
-    }
-    
-    for date_str, pred in gemini_history.items():
-        df.loc[df['Date'] == pd.to_datetime(date_str), 'Past_Predicted_Number'] = pred
-        
-    df['Lag_1_Error'] = df['Lag_1'] - df['Past_Predicted_Number'].shift(1)
+    # Clean up any NaNs created by rolling windows
+    df = df.fillna(0)
 
     return df
 
@@ -211,8 +226,7 @@ def push_to_firebase(top_preds, signals_data):
         target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
         pure_date_obj = target_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
         target_str = pure_date_obj.strftime('%Y-%m-%d')
-        
-        # Now using the ACTUAL top 4 probabilities from the ML model
+
         prediction_data = {
             "target_date": pure_date_obj,
             "top_prediction": top_preds[0]['number'],
@@ -220,7 +234,6 @@ def push_to_firebase(top_preds, signals_data):
             "runner_up_1": { "number": top_preds[1]['number'], "probability": top_preds[1]['prob'] },
             "runner_up_2": { "number": top_preds[2]['number'], "probability": top_preds[2]['prob'] },
             "runner_up_3": { "number": top_preds[3]['number'], "probability": top_preds[3]['prob'] },
-            # Add this new line:
             "runner_up_4": { "number": top_preds[4]['number'], "probability": top_preds[4]['prob'] },
             "signals": signals_data,
             "timestamp": firestore.SERVER_TIMESTAMP
@@ -243,7 +256,7 @@ def train_and_predict():
     csv_path = 'satta_disawar_historical_data.csv'
     
     df_raw = fetch_latest_result(csv_path)
-    
+
     # --- FIX 1: INJECTING THE "TOMORROW" DUMMY ROW ---
     ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
     target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
@@ -253,35 +266,60 @@ def train_and_predict():
         dummy_row = pd.DataFrame({'Date': [target_str], 'Winning_Number': [np.nan]})
         df_raw = pd.concat([df_raw, dummy_row], ignore_index=True)
     
-    # Run the feature engineer (which will cleanly shift today's number into tomorrow's Lag_1)
+    # Run the feature engineer
     df = prepare_data(df_raw)
 
-    features = [
-        'Lag_1', 'Lag_2', 'Lag_3', 'Lag_7', 
-        'Month_Sin', 'Month_Cos', 'Day_Sin', 'Day_Cos', 
-        'Rolling_Mean_3', 'Lag_1_Error',
-        'Days_To_Festival', 'Festival_Mode'
+    initial_features = [
+        'Lag_1', 'Lag_2', 'Lag_3', 'Month_Sin', 'Month_Cos',
+        'Lag_1_Is_High', 'Lag_1_Is_Even', 
+        'Lag_1_Days_Since_Even', 'Lag_1_Days_Since_High',
+        'Rolling_Std_14', 'Z_Score_30', 'Even_Ratio_30d', 'High_Ratio_30d',
+        'EMA_7', 'EMA_30', 'Days_To_Festival', 'Festival_Mode'
     ]
     
-    # Clean the training data (Exclude the dummy row since we don't know the answer yet)
     train_df = df.dropna(subset=['Winning_Number']).copy()
-    train_df = train_df.dropna(subset=features)
-
-    X = train_df[features]
+    X_full = train_df[initial_features]
     Y = train_df['Winning_Number']
 
-    print("Training the AI Model using a Classifier voting engine...")
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X, Y)
+    # --- TIME-DECAY WEIGHTING (90-day half-life) ---
+    max_date = train_df['Date'].max()
+    train_df['Days_Old'] = (max_date - train_df['Date']).dt.days
+    time_decay_weights = np.exp(-train_df['Days_Old'] / 90) 
 
-    # --- FIX 2: PREDICTING THE FUTURE ---
-    # Extract the features specifically for tomorrow's dummy row
-    tomorrow_clues = df.tail(1)[features].copy()
+    print(f"Total rows for training: {len(train_df)}")
+
+    # --- STAGE 1: THE PRIMER MODEL (Feature Assessment) ---
+    print("Training Primer Model to assess feature importance...")
+    primer_model = RandomForestClassifier(n_estimators=50, random_state=42)
+    primer_model.fit(X_full, Y)
+
+    importances = primer_model.feature_importances_
+    feature_importance_dict = dict(zip(initial_features, importances))
+    sorted_features = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=True)
+
+    # --- STAGE 2: THE PRUNING SCRIPT ---
+    keep_count = int(len(sorted_features) * 0.70) # Keeps top 70%
+    top_features = [f[0] for f in sorted_features[:keep_count]]
+    
+    print(f"\n--- Pruning Report ---")
+    print(f"Original feature count: {len(initial_features)}")
+    print(f"Pruned feature count: {len(top_features)}")
+    print(f"Dropped lowest performing 30%.")
+    
+    # --- STAGE 3: THE FINAL ENGINE ---
+    X_pruned = train_df[top_features]
+    
+    print("\nTraining Final Engine with optimal features and time-decay weights...")
+    final_model = RandomForestClassifier(n_estimators=200, max_depth=12, random_state=42)
+    final_model.fit(X_pruned, Y, sample_weight=time_decay_weights)
+
+    # Extract features for tomorrow using ONLY the pruned top features
+    tomorrow_clues = df.tail(1)[top_features].copy()
     tomorrow_clues = tomorrow_clues.fillna(0) 
     
     # Cast the votes
-    probabilities = model.predict_proba(tomorrow_clues)[0]
-    classes = model.classes_
+    probabilities = final_model.predict_proba(tomorrow_clues)[0]
+    classes = final_model.classes_
     
     # Get the indices of the top 5 highest probabilities
     top_5_indices = np.argsort(probabilities)[-5:][::-1]
@@ -296,16 +334,18 @@ def train_and_predict():
     
     # --- GENERATE THE LIVE SIGNAL STREAM ---
     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    top_feature_index = np.argmax(model.feature_importances_)
-    top_feature_name = features[top_feature_index].upper()
-    fest_days = int(tomorrow_clues['Days_To_Festival'].values[0])
-    lag_err = float(tomorrow_clues['Lag_1_Error'].values[0])
+    top_feature_index = np.argmax(final_model.feature_importances_)
+    top_feature_name = top_features[top_feature_index].upper()
+    
+    # Safely pull exact values for signals
+    fest_days = int(df.tail(1)['Days_To_Festival'].values[0])
+    z_score = float(df.tail(1)['Z_Score_30'].values[0])
     
     live_signals = [
         { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"ENSEMBLE_VOTE_CONSENSUS", "confidence": f"{confidence_score}%", "status": "HIGH_CONF" if confidence_score > 5.0 else "SENSITIVE" },
-        { "time": (ist_now - timedelta(seconds=14)).strftime('%H:%M:%S'), "signal": f"PRIMARY_NODE: {top_feature_name}", "confidence": f"{int(model.feature_importances_[top_feature_index] * 100)}% WGT", "status": "STABLE" },
+        { "time": (ist_now - timedelta(seconds=14)).strftime('%H:%M:%S'), "signal": f"PRIMARY_NODE: {top_feature_name}", "confidence": f"{int(final_model.feature_importances_[top_feature_index] * 100)}% WGT", "status": "STABLE" },
         { "time": (ist_now - timedelta(seconds=27)).strftime('%H:%M:%S'), "signal": f"CULTURAL_PROXIMITY: {fest_days}D", "confidence": "92%", "status": "HIGH_CONF" if fest_days <= 5 else "STABLE" },
-        { "time": (ist_now - timedelta(seconds=41)).strftime('%H:%M:%S'), "signal": f"RESIDUAL_BIAS_ADJ: {lag_err:.1f}", "confidence": "71%", "status": "SENSITIVE" if abs(lag_err) > 30 else "STABLE" },
+        { "time": (ist_now - timedelta(seconds=41)).strftime('%H:%M:%S'), "signal": f"VOLATILITY_Z_SCORE: {z_score:.2f}", "confidence": "71%", "status": "SENSITIVE" if abs(z_score) > 2.0 else "STABLE" },
         { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": "PATTERN_CLASSIFICATION_NODE", "confidence": "100%", "status": "STABLE" }
     ]
     
