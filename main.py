@@ -353,7 +353,7 @@ def train_and_predict():
     fft_pulse = float(df.tail(1)['FFT_Pulse_14d'].values[0]) if 'FFT_Pulse_14d' in top_features else 0.0
     
     live_signals = [
-        { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"MONTE_CARLO_CONSENSUS", "confidence": f"{confidence_score}%", "status": "STABLE" },
+        { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"MONTE_CARLO_CONSENSUS", "confidence": f"{confidence_score:.2f}%", "status": "STABLE" },
         { "time": (ist_now - timedelta(seconds=14)).strftime('%H:%M:%S'), "signal": f"PRIMARY_NODE: {top_feature_name}", "confidence": f"{int(final_model.feature_importances_[top_feature_index] * 100)}% WGT", "status": "STABLE" },
         { "time": (ist_now - timedelta(seconds=27)).strftime('%H:%M:%S'), "signal": f"CULTURAL_PROXIMITY: {fest_days}D", "confidence": "92%", "status": "HIGH_CONF" if fest_days <= 5 else "STABLE" },
         { "time": (ist_now - timedelta(seconds=41)).strftime('%H:%M:%S'), "signal": f"FOURIER_PULSE_DETECTED: {fft_pulse:.2f}", "confidence": "88%", "status": "SENSITIVE" if fft_pulse > 10 else "STABLE" },
