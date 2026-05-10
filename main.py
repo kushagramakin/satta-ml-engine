@@ -140,22 +140,38 @@ def fetch_latest_result(csv_path):
         sync_monthly_metrics()
         return df
 
-# --- 2. THE CULTURAL SEASONALITY ENRICHER ---
+# --- 2. THE CULTURAL SEASONALITY ENRICHER (Lunar-Adjusted) ---
 def apply_cultural_seasonality(df):
-    festivals = [
-        '2026-01-14', '2026-02-26', '2026-03-03', '2026-03-20', 
-        '2026-04-06', '2026-05-27', '2026-08-26', '2026-08-28', '2026-11-08'
-    ]
-    fest_dates = pd.to_datetime(festivals)
+    # Map the exact dates of your highest-volatility cultural events per year
+    # (Examples: Makar Sankranti, Holi, Eid, Raksha Bandhan, Diwali, etc.)
+    festival_map = {
+        2022: ['2022-01-14', '2022-03-18', '2022-05-03', '2022-08-11', '2022-10-24'],
+        2023: ['2023-01-14', '2023-03-08', '2023-04-22', '2023-08-30', '2023-11-12'],
+        2024: ['2024-01-14', '2024-03-25', '2024-04-11', '2024-08-19', '2024-10-31'],
+        2025: ['2025-01-14', '2025-03-14', '2025-03-31', '2025-08-09', '2025-10-20'],
+        2026: ['2026-01-14', '2026-03-03', '2026-03-20', '2026-08-28', '2026-11-08'],
+        2027: ['2027-01-14', '2027-03-22', '2027-03-10', '2027-08-17', '2027-10-29']
+    }
+    
+    # Flatten the map into a single massive list of all historical/future festival dates
+    all_festivals = []
+    for year, dates in festival_map.items():
+        all_festivals.extend(dates)
+        
+    fest_dates = pd.to_datetime(all_festivals)
     
     def days_to_nearest(current_date):
+        # Find all festivals that happen ON or AFTER the current row's date
         future_fests = fest_dates[fest_dates >= current_date]
         if not future_fests.empty:
             return (future_fests[0] - current_date).days
-        return 30 
+        return 30 # Default cap if no upcoming festivals are found in the array
         
     df['Days_To_Festival'] = df['Date'].apply(days_to_nearest)
+    
+    # "Festival Mode" triggers if the date is within 3 days (before or on) a major event
     df['Festival_Mode'] = (df['Days_To_Festival'] <= 3).astype(int)
+    
     return df
 
 # --- 3. THE FEATURE ENGINEER (Preparing the Data with Advanced Dimensions) ---
