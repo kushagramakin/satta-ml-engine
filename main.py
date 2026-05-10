@@ -62,7 +62,7 @@ def sync_monthly_metrics():
     current_month_str = ist_time.strftime('%Y-%m')
     
     start_of_month = ist_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
+
     docs = db.collection('historical_draws').where('date', '>=', start_of_month).stream()
     
     total_signals = 0
@@ -100,7 +100,7 @@ def fetch_latest_result(csv_path):
         
         if not ds_row:
             raise ValueError("Could not find the Desawar row in the HTML.")
-            
+
         today_str = ds_row.find('td', class_='today-number').find('h3').text.strip()
         
         if not today_str.isdigit():
@@ -144,8 +144,6 @@ def fetch_latest_result(csv_path):
 
 # --- 2. THE CULTURAL SEASONALITY ENRICHER (Lunar-Adjusted) ---
 def apply_cultural_seasonality(df):
-    # Map the exact dates of your highest-volatility cultural events per year
-    # (Examples: Makar Sankranti, Holi, Eid, Raksha Bandhan, Diwali, etc.)
     festival_map = {
         2022: ['2022-01-14', '2022-03-18', '2022-05-03', '2022-08-11', '2022-10-24'],
         2023: ['2023-01-14', '2023-03-08', '2023-04-22', '2023-08-30', '2023-11-12'],
@@ -154,8 +152,7 @@ def apply_cultural_seasonality(df):
         2026: ['2026-01-14', '2026-03-03', '2026-03-20', '2026-08-28', '2026-11-08'],
         2027: ['2027-01-14', '2027-03-22', '2027-03-10', '2027-08-17', '2027-10-29']
     }
-    
-    # Flatten the map into a single massive list of all historical/future festival dates
+
     all_festivals = []
     for year, dates in festival_map.items():
         all_festivals.extend(dates)
@@ -163,15 +160,12 @@ def apply_cultural_seasonality(df):
     fest_dates = pd.to_datetime(all_festivals)
     
     def days_to_nearest(current_date):
-        # Find all festivals that happen ON or AFTER the current row's date
         future_fests = fest_dates[fest_dates >= current_date]
         if not future_fests.empty:
             return (future_fests[0] - current_date).days
-        return 30 # Default cap if no upcoming festivals are found in the array
+        return 30 
         
     df['Days_To_Festival'] = df['Date'].apply(days_to_nearest)
-    
-    # "Festival Mode" triggers if the date is within 3 days (before or on) a major event
     df['Festival_Mode'] = (df['Days_To_Festival'] <= 3).astype(int)
     
     return df
@@ -181,13 +175,11 @@ def prepare_data(df):
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date')
 
-    # Basic Time Setup
     df['Month'] = df['Date'].dt.month
     df['Day'] = df['Date'].dt.day
     df['Month_Sin'] = np.sin(2 * np.pi * df['Month'] / 12)
     df['Month_Cos'] = np.cos(2 * np.pi * df['Month'] / 12)
     
-    # Lags & Binaries
     df['Lag_1'] = df['Winning_Number'].shift(1)
     df['Is_High'] = (df['Winning_Number'] >= 50).astype(int)
     df['Is_Even'] = (df['Winning_Number'] % 2 == 0).astype(int)
@@ -195,18 +187,14 @@ def prepare_data(df):
     df['Lag_1_Is_High'] = df['Is_High'].shift(1)
     df['Lag_1_Is_Even'] = df['Is_Even'].shift(1)
 
-    # Volatility
     df['Rolling_Std_14'] = df['Winning_Number'].shift(1).rolling(window=14).std()
     df['Rolling_Mean_30'] = df['Winning_Number'].shift(1).rolling(window=30).mean()
     df['Z_Score_30'] = (df['Lag_1'] - df['Rolling_Mean_30']) / df['Rolling_Std_14']
     
-    # --- DIMENSION 4: FAST FOURIER TRANSFORMS (FFT) ---
-    # We calculate the amplitude of the dominant frequency in the last 14 days
-    # This detects hidden mathematical "pulses" in the sequence
     def get_dominant_frequency(series):
         if series.isna().any(): return 0
         fft_vals = np.fft.fft(series.values)
-        return np.abs(fft_vals)[1] # Get amplitude of first main frequency
+        return np.abs(fft_vals)[1] 
 
     df['FFT_Pulse_14d'] = df['Winning_Number'].shift(1).rolling(window=14).apply(get_dominant_frequency, raw=False)
 
@@ -246,6 +234,7 @@ def push_to_firebase(top_preds, signals_data):
             'predicted_number': top_preds[0]['number'],
             'updated_at': firestore.SERVER_TIMESTAMP
         }
+
         db.collection('predictions').document('latest_prediction').set(latest_data)
         print(f"SUCCESS: Pushed actual top matrix to Firebase!")
         
@@ -257,7 +246,6 @@ def train_and_predict():
     csv_path = 'satta_disawar_historical_data.csv'
     df_raw = fetch_latest_result(csv_path)
 
-    # Injecting the "Tomorrow" Dummy Row
     ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
     target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
     target_str = target_date_obj.strftime('%Y-%m-%d')
@@ -271,20 +259,18 @@ def train_and_predict():
     initial_features = [
         'Lag_1', 'Month_Sin', 'Month_Cos', 'Lag_1_Is_High', 'Lag_1_Is_Even', 
         'Rolling_Std_14', 'Z_Score_30', 'Days_To_Festival', 'Festival_Mode',
-        'FFT_Pulse_14d' # The new Fourier feature
+        'FFT_Pulse_14d'
     ]
     
     train_df = df.dropna(subset=['Winning_Number']).copy()
     X_full = train_df[initial_features]
     Y = train_df['Winning_Number'].astype(int)
 
-    # Smoothed Time-Decay Weights
     max_date = train_df['Date'].max()
     train_df['Days_Old'] = (max_date - train_df['Date']).dt.days
     time_decay_weights = 1 / (1 + (train_df['Days_Old'] / 365))
 
     # --- DIMENSION 1: XGBOOST PRIMER MODEL ---
-    # Gradient boosting replaces Random Forest for finding microscopic data edges
     print("Training XGBoost Primer Model to assess feature importance...")
     primer_model = XGBClassifier(n_estimators=50, random_state=42, use_label_encoder=False, eval_metric='mlogloss')
     primer_model.fit(X_full, Y)
@@ -293,45 +279,19 @@ def train_and_predict():
     feature_importance_dict = dict(zip(initial_features, importances))
     sorted_features = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=True)
 
-    keep_count = int(len(sorted_features) * 0.80) 
-    top_features = [f[0] for f in sorted_features[:keep_count]]
-    X_pruned = train_df[top_features]
-
     # --- DIMENSION 3: OPTUNA HYPERPARAMETER TUNING ---
-    print("\nRunning Optuna for dynamic hyperparameter tuning (15 trials)...")
-    """    
-    optuna.logging.set_verbosity(optuna.logging.WARNING) # Keep logs clean
-    
-    def objective(trial):
-        params = {
-            'max_depth': trial.suggest_int('max_depth', 3, 8),
-            'n_estimators': trial.suggest_int('n_estimators', 50, 150),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2)
-        }
-        model = XGBClassifier(**params, random_state=42, eval_metric='mlogloss')
-        # Simulate accuracy using a 3-fold cross validation
-        score = cross_val_score(model, X_pruned, Y, cv=3, scoring='accuracy').mean()
-        return score
-
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=15)
-    best_params = study.best_params
-    print(f"Optimal parameters for today's market: {best_params}")
-    """
     print("\nRunning Multi-Dimensional Optuna Tuning...")
+    optuna.logging.set_verbosity(optuna.logging.WARNING) 
     
     def objective(trial):
-        # 1. AI decides how many features to keep (from 40% to 100%)
         prune_ratio = trial.suggest_float('prune_ratio', 0.4, 1.0)
         
-        # 2. AI decides model complexity
         params = {
             'max_depth': trial.suggest_int('max_depth', 3, 8),
             'n_estimators': trial.suggest_int('n_estimators', 50, 150),
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2)
         }
-        
-        # Apply the dynamic pruning for this specific trial
+
         keep_count = max(1, int(len(sorted_features) * prune_ratio))
         current_top_features = [f[0] for f in sorted_features[:keep_count]]
         X_trial = train_df[current_top_features]
@@ -341,10 +301,18 @@ def train_and_predict():
         return score
 
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=20) # Increased to 20 to handle extra dimension
+    study.optimize(objective, n_trials=20) 
     
-    best_prune = study.best_params['prune_ratio']
+    best_params = study.best_params
+    
+    # --- THE BUG FIX: Separate Pruning from XGBoost Params ---
+    best_prune = best_params.pop('prune_ratio') 
     print(f"Optimal Pruning for today: {int(best_prune*100)}% of features.")
+    
+    # Apply the AI's chosen pruning ratio to the final dataset
+    keep_count = max(1, int(len(sorted_features) * best_prune))
+    top_features = [f[0] for f in sorted_features[:keep_count]]
+    X_pruned = train_df[top_features]
 
     # --- TRAINING FINAL XGBOOST ENGINE ---
     print("\nTraining Final XGBoost Engine with optimal parameters...")
@@ -358,14 +326,11 @@ def train_and_predict():
     print("\nRunning Monte Carlo Simulations (100 permutations)...")
     mc_predictions = []
     
-    # We predict 100 times, injecting a tiny bit of Gaussian noise (1% variance) 
-    # into the features to stress-test the model's confidence.
     for _ in range(100):
         noise = np.random.normal(0, 0.01, tomorrow_clues.shape)
         noisy_clues = tomorrow_clues + noise
         mc_predictions.append(final_model.predict_proba(noisy_clues)[0])
     
-    # Average the probabilities across all 100 simulations
     probabilities = np.mean(mc_predictions, axis=0)
     classes = final_model.classes_
     
