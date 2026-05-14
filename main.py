@@ -8,6 +8,7 @@ from firebase_admin import credentials, firestore
 import requests
 from bs4 import BeautifulSoup
 from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import KFold
 from xgboost import XGBClassifier
 import optuna
 
@@ -47,12 +48,22 @@ def sync_recent_audit(df):
         if pred_ref.exists:
             pred_data = pred_ref.to_dict()
             predicted_number = pred_data.get('top_prediction')
+            
+            # THE UPGRADE: Track if the number hits anywhere in the Top 5 Matrix
+            top_5_list = [predicted_number]
+            for i in range(1, 5):
+                runner_up = pred_data.get(f'runner_up_{i}')
+                if runner_up:
+                    top_5_list.append(runner_up.get('number'))
+            
             update_data['predicted_number'] = predicted_number
+            update_data['top_5_predictions'] = top_5_list
             update_data['is_hit'] = (predicted_number == winning_number)
+            update_data['is_top_5_hit'] = (winning_number in top_5_list)
 
         db.collection('historical_draws').document(date_str).set(update_data, merge=True)
         
-    print("SUCCESS: Recent historical audit verified and synced to Firebase!")
+    print("SUCCESS: Recent historical audit verified (with Top 5 tracking) and synced to Firebase!")
 
 def sync_monthly_metrics():
     if not init_firebase(): return
@@ -94,7 +105,7 @@ def fetch_latest_result(csv_path):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
-        
+
         soup = BeautifulSoup(response.text, 'html.parser')
         ds_row = soup.find('tr', id='DS')
         
@@ -261,7 +272,7 @@ def train_and_predict():
         'Rolling_Std_14', 'Z_Score_30', 'Days_To_Festival', 'Festival_Mode',
         'FFT_Pulse_14d'
     ]
-    
+
     train_df = df.dropna(subset=['Winning_Number']).copy()
     X_full = train_df[initial_features]
     Y = train_df['Winning_Number'].astype(int)
@@ -291,13 +302,15 @@ def train_and_predict():
             'n_estimators': trial.suggest_int('n_estimators', 50, 150),
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2)
         }
-
         keep_count = max(1, int(len(sorted_features) * prune_ratio))
         current_top_features = [f[0] for f in sorted_features[:keep_count]]
         X_trial = train_df[current_top_features]
         
         model = XGBClassifier(**params, random_state=42, eval_metric='mlogloss')
-        score = cross_val_score(model, X_trial, Y, cv=3, scoring='accuracy').mean()
+        
+        # THE FIX: KFold Random Split to silence Scikit-Learn Sparse warnings
+        kf = KFold(n_splits=3, shuffle=True, random_state=42)
+        score = cross_val_score(model, X_trial, Y, cv=kf, scoring='accuracy').mean()
         return score
 
     study = optuna.create_study(direction='maximize')
@@ -305,11 +318,9 @@ def train_and_predict():
     
     best_params = study.best_params
     
-    # --- THE BUG FIX: Separate Pruning from XGBoost Params ---
     best_prune = best_params.pop('prune_ratio') 
     print(f"Optimal Pruning for today: {int(best_prune*100)}% of features.")
     
-    # Apply the AI's chosen pruning ratio to the final dataset
     keep_count = max(1, int(len(sorted_features) * best_prune))
     top_features = [f[0] for f in sorted_features[:keep_count]]
     X_pruned = train_df[top_features]
@@ -325,9 +336,14 @@ def train_and_predict():
     # --- DIMENSION 5: MONTE CARLO SIMULATIONS ---
     print("\nRunning Monte Carlo Simulations (100 permutations)...")
     mc_predictions = []
-    
+
+    # THE FIX: Calculate real historical standard deviation for dynamic noise
+    # If a feature has 0 volatility, default to 0.01 so math doesn't break
+    feature_stds = X_pruned.std().replace(0, 0.01).values
+
     for _ in range(100):
-        noise = np.random.normal(0, 0.01, tomorrow_clues.shape)
+        # Inject noise scaled to exactly 10% of the historical volatility
+        noise = np.random.normal(0, feature_stds * 0.1, tomorrow_clues.shape)
         noisy_clues = tomorrow_clues + noise
         mc_predictions.append(final_model.predict_proba(noisy_clues)[0])
     
