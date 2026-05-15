@@ -273,7 +273,10 @@ def train_and_predict():
         'FFT_Pulse_14d'
     ]
 
-    train_df = df.dropna(subset=['Winning_Number']).copy()
+    # --- THE BUG FIX: Strict Date Filtering ---
+    # Explicitly exclude the target date so the model never trains on the fake '0' dummy row
+    train_df = df[df['Date'] < pd.to_datetime(target_str)].copy()
+    
     X_full = train_df[initial_features]
     Y = train_df['Winning_Number'].astype(int)
 
