@@ -8,9 +8,13 @@ from firebase_admin import credentials, firestore
 import requests
 from bs4 import BeautifulSoup
 from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import KFold
 from xgboost import XGBClassifier
 import optuna
+
+# Mute Scikit-Learn and XGBoost Deprecation Warnings
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 # --- 0. FIREBASE CONNECTION MANAGER ---
 def init_firebase():
@@ -55,7 +59,7 @@ def sync_recent_audit(df):
                 runner_up = pred_data.get(f'runner_up_{i}')
                 if runner_up:
                     top_5_list.append(runner_up.get('number'))
-            
+
             update_data['predicted_number'] = predicted_number
             update_data['top_5_predictions'] = top_5_list
             update_data['is_hit'] = (predicted_number == winning_number)
@@ -311,9 +315,8 @@ def train_and_predict():
         
         model = XGBClassifier(**params, random_state=42, eval_metric='mlogloss')
         
-        # THE FIX: KFold Random Split to silence Scikit-Learn Sparse warnings
-        kf = KFold(n_splits=3, shuffle=True, random_state=42)
-        score = cross_val_score(model, X_trial, Y, cv=kf, scoring='accuracy').mean()
+        # THE FIX: Reverted to Stratified Split (cv=3) to prevent missing class errors
+        score = cross_val_score(model, X_trial, Y, cv=3, scoring='accuracy').mean()
         return score
 
     study = optuna.create_study(direction='maximize')
@@ -340,8 +343,7 @@ def train_and_predict():
     print("\nRunning Monte Carlo Simulations (100 permutations)...")
     mc_predictions = []
 
-    # THE FIX: Calculate real historical standard deviation for dynamic noise
-    # If a feature has 0 volatility, default to 0.01 so math doesn't break
+    # Calculate real historical standard deviation for dynamic noise
     feature_stds = X_pruned.std().replace(0, 0.01).values
 
     for _ in range(100):
