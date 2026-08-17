@@ -316,17 +316,38 @@ def train_and_predict():
         tscv = TimeSeriesSplit(n_splits=3)
         losses = []
         
+        # Get every single class (0 to 99) that exists in the entire dataset
+        all_possible_classes = np.sort(Y.unique())
+        
         for train_idx, val_idx in tscv.split(train_df):
-            X_tr, X_val = train_df[current_features].iloc[train_idx], train_df[current_features].iloc[val_idx]
-            y_tr, y_val = Y.iloc[train_idx], Y.iloc[val_idx]
-            w_tr = time_decay_weights.iloc[train_idx]
+            X_tr = train_df[current_features].iloc[train_idx].copy()
+            y_tr = Y.iloc[train_idx].copy()
+            w_tr = time_decay_weights.iloc[train_idx].copy()
+            X_val = train_df[current_features].iloc[val_idx].copy()
+            y_val = Y.iloc[val_idx].copy()
+            
+            # --- THE MISSING CLASS BYPASS TRICK ---
+            # Find which numbers are missing in this specific chronological chunk
+            missing_classes = np.setdiff1d(all_possible_classes, y_tr)
+            
+            if len(missing_classes) > 0:
+                # Create dummy rows by cloning the first row for each missing class
+                dummy_X = pd.DataFrame([X_tr.iloc[0]] * len(missing_classes), columns=X_tr.columns)
+                dummy_y = pd.Series(missing_classes)
+                dummy_w = pd.Series([0.0] * len(missing_classes)) # Zero weight = no mathematical impact!
+                
+                # Append them to the training fold
+                X_tr = pd.concat([X_tr, dummy_X], ignore_index=True)
+                y_tr = pd.concat([y_tr, dummy_y], ignore_index=True)
+                w_tr = pd.concat([w_tr, dummy_w], ignore_index=True)
+            # --------------------------------------
             
             clf = XGBClassifier(**params, random_state=42, eval_metric='mlogloss', objective='multi:softprob')
             clf.fit(X_tr, y_tr, sample_weight=w_tr)
             
             val_probs = clf.predict_proba(X_val)
-            # Evaluate log loss against classes present in training split
-            loss = log_loss(y_val, val_probs, labels=clf.classes_)
+            # Evaluate log loss against all possible classes to ensure matrix shapes match
+            loss = log_loss(y_val, val_probs, labels=all_possible_classes)
             losses.append(loss)
             
         return np.mean(losses)
