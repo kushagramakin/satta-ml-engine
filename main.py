@@ -1,24 +1,27 @@
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 import os
 import json
-import firebase_admin
-from firebase_admin import credentials, firestore
+import warnings
+from datetime import datetime, timedelta, timezone
+
+import numpy as np
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from sklearn.model_selection import cross_val_score
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import log_loss
 from xgboost import XGBClassifier
 import optuna
 
-# Mute Scikit-Learn and XGBoost Deprecation Warnings
-import warnings
+# Suppress deprecation and user warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 # --- 0. FIREBASE CONNECTION MANAGER ---
 def init_firebase():
-    """Ensures Firebase is connected before we try to read or write data."""
+    """Ensures Firebase is connected before attempting read/write operations."""
     if not firebase_admin._apps:
         firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
         if firebase_secret:
@@ -31,18 +34,17 @@ def init_firebase():
             return False
     return True
 
-# --- 1. THE WEB SCRAPER & SELF-HEALING AUDIT ---
+# --- 1. AUDIT & METRICS SYNC ---
 def sync_recent_audit(df):
     if not init_firebase(): return
     db = firestore.client()
-    
     recent_df = df.tail(7)
     
     for _, row in recent_df.iterrows():
         date_str = str(row['Date'])
         winning_number = int(row['Winning_Number'])
-        
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        
         update_data = {
             'date': date_obj,
             'winning_number': winning_number
@@ -53,7 +55,6 @@ def sync_recent_audit(df):
             pred_data = pred_ref.to_dict()
             predicted_number = pred_data.get('top_prediction')
             
-            # THE UPGRADE: Track if the number hits anywhere in the Top 5 Matrix
             top_5_list = [predicted_number]
             for i in range(1, 5):
                 runner_up = pred_data.get(f'runner_up_{i}')
@@ -67,15 +68,14 @@ def sync_recent_audit(df):
 
         db.collection('historical_draws').document(date_str).set(update_data, merge=True)
         
-    print("SUCCESS: Recent historical audit verified (with Top 5 tracking) and synced to Firebase!")
+    print("SUCCESS: Recent historical audit verified and synced to Firebase.")
 
 def sync_monthly_metrics():
     if not init_firebase(): return
     db = firestore.client()
     
-    ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     current_month_str = ist_time.strftime('%Y-%m')
-    
     start_of_month = ist_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     docs = db.collection('historical_draws').where('date', '>=', start_of_month).stream()
@@ -92,22 +92,21 @@ def sync_monthly_metrics():
                 
     if total_signals > 0:
         accuracy_rate = total_hits / total_signals
-        
         db.collection('monthly_metrics').document(current_month_str).set({
             'month_year': current_month_str,
             'accuracy_rate': accuracy_rate,
-            'average_log_loss': 0.4521 
+            'total_signals': total_signals,
+            'total_hits': total_hits
         }, merge=True)
-
-        print(f"SUCCESS: Auto-updated Chart Metrics for {current_month_str} (Accuracy: {accuracy_rate*100:.1f}%)")
+        print(f"SUCCESS: Auto-updated metrics for {current_month_str} (Top-1 Accuracy: {accuracy_rate*100:.1f}%)")
 
 def fetch_latest_result(csv_path):
     print("Attempting to fetch today's result from Satta King Fast...")
-    url = "https://satta-king-fast.com/desawar/satta-result-chart/ds/" 
+    url = "https://satta-king-fast.com/desawar/satta-result-chart/ds/"
     
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -122,16 +121,15 @@ def fetch_latest_result(csv_path):
             raise ValueError(f"Today's number is not yet available. Found: '{today_str}'")
             
         todays_number = int(today_str)
-        ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
         today_date = ist_time.strftime('%Y-%m-%d')
         
         df = pd.read_csv(csv_path)
 
         if today_date in df['Date'].values:
-            print(f"Data for {today_date} already exists in the CSV. Skipping append.")
+            print(f"Data for {today_date} already exists in CSV. Skipping append.")
         else:
             dt_obj = datetime.strptime(today_date, '%Y-%m-%d')
-            
             new_row = pd.DataFrame([{
                 'Date': today_date,
                 'Year': float(dt_obj.year),
@@ -143,21 +141,20 @@ def fetch_latest_result(csv_path):
             
             df = pd.concat([df, new_row], ignore_index=True)
             df.to_csv(csv_path, index=False)
-            print(f"Added today's result ({todays_number}) to the CSV with fully populated date columns.")
+            print(f"Added today's result ({todays_number}) to CSV.")
             
         sync_recent_audit(df)
         sync_monthly_metrics()
-            
         return df
     
     except Exception as e:
-        print(f"Scraping failed: {e}. Proceeding with existing CSV data.")
+        print(f"Scraping notice/failure: {e}. Proceeding with existing CSV data.")
         df = pd.read_csv(csv_path)
         sync_recent_audit(df)
         sync_monthly_metrics()
         return df
 
-# --- 2. THE CULTURAL SEASONALITY ENRICHER (Lunar-Adjusted) ---
+# --- 2. CULTURAL SEASONALITY ---
 def apply_cultural_seasonality(df):
     festival_map = {
         2022: ['2022-01-14', '2022-03-18', '2022-05-03', '2022-08-11', '2022-10-24'],
@@ -168,27 +165,21 @@ def apply_cultural_seasonality(df):
         2027: ['2027-01-14', '2027-03-22', '2027-03-10', '2027-08-17', '2027-10-29']
     }
 
-    all_festivals = []
-    for year, dates in festival_map.items():
-        all_festivals.extend(dates)
-        
+    all_festivals = [d for dates in festival_map.values() for d in dates]
     fest_dates = pd.to_datetime(all_festivals)
     
     def days_to_nearest(current_date):
         future_fests = fest_dates[fest_dates >= current_date]
-        if not future_fests.empty:
-            return (future_fests[0] - current_date).days
-        return 30 
+        return (future_fests[0] - current_date).days if not future_fests.empty else 30
         
     df['Days_To_Festival'] = df['Date'].apply(days_to_nearest)
     df['Festival_Mode'] = (df['Days_To_Festival'] <= 3).astype(int)
-    
     return df
 
-# --- 3. THE FEATURE ENGINEER (With Fourier Transforms) ---
+# --- 3. FEATURE ENGINEERING ---
 def prepare_data(df):
     df['Date'] = pd.to_datetime(df['Date'])
-    df = df.sort_values('Date')
+    df = df.sort_values('Date').reset_index(drop=True)
 
     df['Month'] = df['Date'].dt.month
     df['Day'] = df['Date'].dt.day
@@ -204,29 +195,26 @@ def prepare_data(df):
 
     df['Rolling_Std_14'] = df['Winning_Number'].shift(1).rolling(window=14).std()
     df['Rolling_Mean_30'] = df['Winning_Number'].shift(1).rolling(window=30).mean()
-    df['Z_Score_30'] = (df['Lag_1'] - df['Rolling_Mean_30']) / df['Rolling_Std_14']
+    df['Z_Score_30'] = (df['Lag_1'] - df['Rolling_Mean_30']) / df['Rolling_Std_14'].replace(0, 1.0)
     
     def get_dominant_frequency(series):
         if series.isna().any(): return 0
         fft_vals = np.fft.fft(series.values)
-        return np.abs(fft_vals)[1] 
+        return float(np.abs(fft_vals)[1])
 
     df['FFT_Pulse_14d'] = df['Winning_Number'].shift(1).rolling(window=14).apply(get_dominant_frequency, raw=False)
-
     df = apply_cultural_seasonality(df)
     df = df.fillna(0)
-
     return df
 
-# --- 4. FIREBASE UPLOAD (Updating the Website) ---
+# --- 4. FIREBASE UPLOAD ---
 def push_to_firebase(top_preds, signals_data):
-    print("Uploading new multi-prediction to Firebase...")
+    print("Uploading multi-prediction matrix to Firebase...")
     if not init_firebase(): return
 
     try:
         db = firestore.client()
-        ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
-        
+        ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
         target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
         pure_date_obj = target_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
         target_str = pure_date_obj.strftime('%Y-%m-%d')
@@ -235,10 +223,10 @@ def push_to_firebase(top_preds, signals_data):
             "target_date": pure_date_obj,
             "top_prediction": top_preds[0]['number'],
             "top_probability_percent": top_preds[0]['prob'], 
-            "runner_up_1": { "number": top_preds[1]['number'], "probability": top_preds[1]['prob'] },
-            "runner_up_2": { "number": top_preds[2]['number'], "probability": top_preds[2]['prob'] },
-            "runner_up_3": { "number": top_preds[3]['number'], "probability": top_preds[3]['prob'] },
-            "runner_up_4": { "number": top_preds[4]['number'], "probability": top_preds[4]['prob'] },
+            "runner_up_1": {"number": top_preds[1]['number'], "probability": top_preds[1]['prob']},
+            "runner_up_2": {"number": top_preds[2]['number'], "probability": top_preds[2]['prob']},
+            "runner_up_3": {"number": top_preds[3]['number'], "probability": top_preds[3]['prob']},
+            "runner_up_4": {"number": top_preds[4]['number'], "probability": top_preds[4]['prob']},
             "signals": signals_data,
             "timestamp": firestore.SERVER_TIMESTAMP
         }
@@ -249,19 +237,18 @@ def push_to_firebase(top_preds, signals_data):
             'predicted_number': top_preds[0]['number'],
             'updated_at': firestore.SERVER_TIMESTAMP
         }
-
         db.collection('predictions').document('latest_prediction').set(latest_data)
-        print(f"SUCCESS: Pushed actual top matrix to Firebase!")
+        print("SUCCESS: Synced live prediction matrix to Firebase.")
         
     except Exception as e:
         print(f"Firebase Upload Failed: {e}")
 
-# --- 5. THE MASTER FUNCTION (With Optuna, XGBoost, & Monte Carlo) ---
+# --- 5. MASTER TRAINING & PREDICTION ENGINE ---
 def train_and_predict():
     csv_path = 'satta_disawar_historical_data.csv'
     df_raw = fetch_latest_result(csv_path)
 
-    ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     target_date_obj = ist_time if ist_time.hour < 5 else ist_time + timedelta(days=1)
     target_str = target_date_obj.strftime('%Y-%m-%d')
     
@@ -277,108 +264,123 @@ def train_and_predict():
         'FFT_Pulse_14d'
     ]
 
-    # --- THE BUG FIX: Strict Date Filtering ---
-    # Explicitly exclude the target date so the model never trains on the fake '0' dummy row
     train_df = df[df['Date'] < pd.to_datetime(target_str)].copy()
-    
     X_full = train_df[initial_features]
     Y = train_df['Winning_Number'].astype(int)
 
+    # Time decay sample weighting
     max_date = train_df['Date'].max()
     train_df['Days_Old'] = (max_date - train_df['Date']).dt.days
-    time_decay_weights = 1 / (1 + (train_df['Days_Old'] / 365))
+    time_decay_weights = 1 / (1 + (train_df['Days_Old'] / 365.0))
 
-    # --- DIMENSION 1: XGBOOST PRIMER MODEL ---
-    print("Training XGBoost Primer Model to assess feature importance...")
-    primer_model = XGBClassifier(n_estimators=50, random_state=42, use_label_encoder=False, eval_metric='mlogloss')
-    primer_model.fit(X_full, Y)
+    # --- DIMENSION 1: FEATURE SELECTION ---
+    print("Evaluating initial feature ranking...")
+    primer = XGBClassifier(
+        n_estimators=50, 
+        max_depth=4,
+        random_state=42, 
+        eval_metric='mlogloss',
+        objective='multi:softprob'
+    )
+    primer.fit(X_full, Y)
+    
+    importances = primer.feature_importances_
+    sorted_features = [f for f, _ in sorted(zip(initial_features, importances), key=lambda x: x[1], reverse=True)]
 
-    importances = primer_model.feature_importances_
-    feature_importance_dict = dict(zip(initial_features, importances))
-    sorted_features = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=True)
-
-    # --- DIMENSION 3: OPTUNA HYPERPARAMETER TUNING ---
-    print("\nRunning Multi-Dimensional Optuna Tuning...")
-    optuna.logging.set_verbosity(optuna.logging.WARNING) 
+    # --- DIMENSION 2: OPTUNA HYPERPARAMETER TUNING ---
+    print("\nRunning Optuna Tuning with TimeSeriesSplit & Log-Loss...")
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    
+    unique_classes = np.sort(Y.unique())
     
     def objective(trial):
-        prune_ratio = trial.suggest_float('prune_ratio', 0.4, 1.0)
+        prune_ratio = trial.suggest_float('prune_ratio', 0.5, 1.0)
+        keep_count = max(3, int(len(sorted_features) * prune_ratio))
+        current_features = sorted_features[:keep_count]
         
         params = {
-            'max_depth': trial.suggest_int('max_depth', 3, 8),
-            'n_estimators': trial.suggest_int('n_estimators', 50, 150),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2)
+            'n_estimators': trial.suggest_int('n_estimators', 50, 200),
+            'max_depth': trial.suggest_int('max_depth', 3, 6),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.15, log=True),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 5),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.1, 5.0, log=True)
         }
-        keep_count = max(1, int(len(sorted_features) * prune_ratio))
-        current_top_features = [f[0] for f in sorted_features[:keep_count]]
-        X_trial = train_df[current_top_features]
         
-        model = XGBClassifier(**params, random_state=42, eval_metric='mlogloss')
+        # Temporal CV using TimeSeriesSplit
+        tscv = TimeSeriesSplit(n_splits=3)
+        losses = []
         
-        # THE FIX: Reverted to Stratified Split (cv=3) to prevent missing class errors
-        score = cross_val_score(model, X_trial, Y, cv=3, scoring='accuracy').mean()
-        return score
+        for train_idx, val_idx in tscv.split(train_df):
+            X_tr, X_val = train_df[current_features].iloc[train_idx], train_df[current_features].iloc[val_idx]
+            y_tr, y_val = Y.iloc[train_idx], Y.iloc[val_idx]
+            w_tr = time_decay_weights.iloc[train_idx]
+            
+            clf = XGBClassifier(**params, random_state=42, eval_metric='mlogloss', objective='multi:softprob')
+            clf.fit(X_tr, y_tr, sample_weight=w_tr)
+            
+            val_probs = clf.predict_proba(X_val)
+            # Evaluate log loss against classes present in training split
+            loss = log_loss(y_val, val_probs, labels=clf.classes_)
+            losses.append(loss)
+            
+        return np.mean(losses)
 
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=20) 
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=15)
     
     best_params = study.best_params
+    best_prune = best_params.pop('prune_ratio')
+    keep_count = max(3, int(len(sorted_features) * best_prune))
+    top_features = sorted_features[:keep_count]
     
-    best_prune = best_params.pop('prune_ratio') 
-    print(f"Optimal Pruning for today: {int(best_prune*100)}% of features.")
-    
-    keep_count = max(1, int(len(sorted_features) * best_prune))
-    top_features = [f[0] for f in sorted_features[:keep_count]]
-    X_pruned = train_df[top_features]
+    print(f"Optimal Pruning: Retaining {len(top_features)} of {len(initial_features)} features.")
+    print(f"Optimal Parameters: {best_params}")
 
-    # --- TRAINING FINAL XGBOOST ENGINE ---
-    print("\nTraining Final XGBoost Engine with optimal parameters...")
-    final_model = XGBClassifier(**best_params, random_state=42, eval_metric='mlogloss')
-    final_model.fit(X_pruned, Y, sample_weight=time_decay_weights)
+    # --- DIMENSION 3: FIT FINAL MODEL ---
+    print("\nTraining Final Tuned Model...")
+    final_model = XGBClassifier(**best_params, random_state=42, eval_metric='mlogloss', objective='multi:softprob')
+    final_model.fit(train_df[top_features], Y, sample_weight=time_decay_weights)
 
     tomorrow_clues = df.tail(1)[top_features].copy()
-    tomorrow_clues = tomorrow_clues.fillna(0) 
     
-    # --- DIMENSION 5: MONTE CARLO SIMULATIONS ---
-    print("\nRunning Monte Carlo Simulations (100 permutations)...")
+    # --- DIMENSION 4: TARGETED MONTE CARLO SIMULATION ---
+    print("\nRunning Targeted Monte Carlo Simulations (100 runs)...")
     mc_predictions = []
-
-    # Calculate real historical standard deviation for dynamic noise
-    feature_stds = X_pruned.std().replace(0, 0.01).values
-
+    
+    # Identify continuous features safe for variance perturbation
+    continuous_features = [f for f in ['Rolling_Std_14', 'Z_Score_30', 'FFT_Pulse_14d'] if f in top_features]
+    
     for _ in range(100):
-        # Inject noise scaled to exactly 10% of the historical volatility
-        noise = np.random.normal(0, feature_stds * 0.1, tomorrow_clues.shape)
-        noisy_clues = tomorrow_clues + noise
-        mc_predictions.append(final_model.predict_proba(noisy_clues)[0])
+        perturbed_clues = tomorrow_clues.copy()
+        if continuous_features:
+            stds = train_df[continuous_features].std().replace(0, 0.01).values
+            noise = np.random.normal(0, stds * 0.05, size=(1, len(continuous_features)))
+            perturbed_clues[continuous_features] += noise
+            
+        probs = final_model.predict_proba(perturbed_clues)[0]
+        mc_predictions.append(probs)
     
-    probabilities = np.mean(mc_predictions, axis=0)
-    classes = final_model.classes_
+    mean_probabilities = np.mean(mc_predictions, axis=0)
+    model_classes = final_model.classes_
     
-    top_5_indices = np.argsort(probabilities)[-5:][::-1]
-    
+    top_5_indices = np.argsort(mean_probabilities)[-5:][::-1]
     top_preds = [
-        {"number": int(classes[idx]), "prob": float(round(probabilities[idx] * 100, 2))}
+        {"number": int(model_classes[idx]), "prob": float(round(mean_probabilities[idx] * 100, 2))}
         for idx in top_5_indices
     ]
     
-    final_prediction = top_preds[0]['number']
-    confidence_score = top_preds[0]['prob']
-    
-    # --- GENERATE THE LIVE SIGNAL STREAM ---
-    ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    top_feature_index = np.argmax(final_model.feature_importances_)
-    top_feature_name = top_features[top_feature_index].upper()
-    
+    # --- LIVE SIGNAL METRICS ---
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    top_feat_idx = np.argmax(final_model.feature_importances_)
+    top_feat_name = top_features[top_feat_idx].upper()
     fest_days = int(df.tail(1)['Days_To_Festival'].values[0])
-    fft_pulse = float(df.tail(1)['FFT_Pulse_14d'].values[0]) if 'FFT_Pulse_14d' in top_features else 0.0
     
     live_signals = [
-        { "time": (ist_now - timedelta(seconds=3)).strftime('%H:%M:%S'), "signal": f"MONTE_CARLO_CONSENSUS", "confidence": f"{confidence_score:.2f}%", "status": "STABLE" },
-        { "time": (ist_now - timedelta(seconds=14)).strftime('%H:%M:%S'), "signal": f"PRIMARY_NODE: {top_feature_name}", "confidence": f"{int(final_model.feature_importances_[top_feature_index] * 100)}% WGT", "status": "STABLE" },
-        { "time": (ist_now - timedelta(seconds=27)).strftime('%H:%M:%S'), "signal": f"CULTURAL_PROXIMITY: {fest_days}D", "confidence": "92%", "status": "HIGH_CONF" if fest_days <= 5 else "STABLE" },
-        { "time": (ist_now - timedelta(seconds=41)).strftime('%H:%M:%S'), "signal": f"FOURIER_PULSE_DETECTED: {fft_pulse:.2f}", "confidence": "88%", "status": "SENSITIVE" if fft_pulse > 10 else "STABLE" },
-        { "time": (ist_now - timedelta(seconds=58)).strftime('%H:%M:%S'), "signal": f"OPTUNA_TUNED_XGBOOST", "confidence": "100%", "status": "STABLE" }
+        {"time": ist_now.strftime('%H:%M:%S'), "signal": "MONTE_CARLO_CONSENSUS", "confidence": f"{top_preds[0]['prob']:.2f}%", "status": "ACTIVE"},
+        {"time": ist_now.strftime('%H:%M:%S'), "signal": f"PRIMARY_FEATURE: {top_feat_name}", "confidence": f"{int(final_model.feature_importances_[top_feat_idx] * 100)}% WGT", "status": "ACTIVE"},
+        {"time": ist_now.strftime('%H:%M:%S'), "signal": f"CULTURAL_PROXIMITY: {fest_days}D", "confidence": "CALENDAR_SYNC", "status": "ACTIVE"}
     ]
     
     push_to_firebase(top_preds, live_signals)
