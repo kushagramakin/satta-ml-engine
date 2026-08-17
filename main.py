@@ -12,6 +12,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import log_loss
+from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 import optuna
 
@@ -266,7 +267,10 @@ def train_and_predict():
 
     train_df = df[df['Date'] < pd.to_datetime(target_str)].copy()
     X_full = train_df[initial_features]
-    Y = train_df['Winning_Number'].astype(int)
+    Y_raw = train_df['Winning_Number'].astype(int)
+    
+    le = LabelEncoder()
+    Y = pd.Series(le.fit_transform(Y_raw), index=train_df.index)
 
     # Time decay sample weighting
     max_date = train_df['Date'].max()
@@ -363,7 +367,7 @@ def train_and_predict():
         mc_predictions.append(probs)
     
     mean_probabilities = np.mean(mc_predictions, axis=0)
-    model_classes = final_model.classes_
+    model_classes = le.inverse_transform(final_model.classes_)
     
     top_5_indices = np.argsort(mean_probabilities)[-5:][::-1]
     top_preds = [
